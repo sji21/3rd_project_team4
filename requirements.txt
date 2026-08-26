@@ -1,0 +1,11 @@
+langchain
+langchain-openai
+langchain-chroma
+chromadb
+openai
+streamlit
+pdfplumber
+lxml
+ragas
+python-dotenv
+pytest
