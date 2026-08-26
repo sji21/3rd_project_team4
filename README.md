@@ -39,3 +39,21 @@ streamlit run app/streamlit_app.py
 
 - `3th_project_basic_guide_documents/3th_project_guide.md` — 과정 공통 가이드
 - `주제선정, 기획 자료/전세ON_프로젝트_계획서.pdf` — 프로젝트 계획서 초안
+
+## 검색 평가 하네스 (검색 엔진 파트)
+
+팀원의 실제 수집 파이프라인이 완성되기 전, 연습용 코퍼스로 검색기와 채점 프로그램을
+먼저 개발하기 위한 구성입니다. 외부 API 키 없이 바로 실행됩니다.
+
+```bash
+python -m src.ingestion.build_mock                          # 연습용 코퍼스 생성
+python -m src.evaluation.run_eval --run-id baseline          # 기준 측정
+python -m src.evaluation.run_eval --run-id exp01-k8 --k 8 --compare baseline
+```
+
+- 연습용 코퍼스: `data/sample/chunks_mock.jsonl` (주택임대차보호법 20개 조문 + 가이드 2건)
+- 평가 문항: `data/eval/dev.jsonl` (정답 근거는 **조문 id**로 지정 — 청킹 방식이 바뀌어도 안 깨짐)
+- 실험 기록: `data/eval/runs/{run_id}.json`
+
+실제 코퍼스로 교체할 때는 `--chunks` 경로만 바꾸면 됩니다. 청크 스키마는
+`build_mock.py`가 생성하는 형식을 따릅니다.
