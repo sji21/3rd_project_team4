@@ -5,6 +5,8 @@ chromadb
 openai
 streamlit
 pdfplumber
+pypdfium2>=5.13,<6
+Pillow>=12,<13
 lxml
 ragas
 python-dotenv
