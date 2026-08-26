@@ -68,9 +68,10 @@ def test_prefers_longer_ocr_text_for_sparse_page(monkeypatch: pytest.MonkeyPatch
     )
     monkeypatch.setattr(extraction, "find_tesseract", lambda: "/fake/tesseract")
     monkeypatch.setattr(extraction, "_ocr_language", lambda _: "kor+eng")
+    monkeypatch.setattr(extraction, "_render_pages", lambda *_: {0: b"png"})
     monkeypatch.setattr(
         extraction,
-        "_ocr_page",
+        "_ocr_image",
         lambda *_: "을구 근저당권 설정 채권최고액 금 팔억육천사백만원",
     )
 

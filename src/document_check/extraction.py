@@ -111,7 +111,9 @@ def _ocr_language(executable: str) -> str:
     return "kor+eng" if "eng" in languages else "kor"
 
 
-def _render_page(data: bytes, page_index: int, dpi: int):
+def _render_pages(data: bytes, page_indexes: list[int], dpi: int) -> dict[int, bytes]:
+    """PDFium 접근을 호출 스레드에 한정해 페이지를 PNG 바이트로 렌더링한다."""
+
     try:
         import pypdfium2 as pdfium
     except ImportError as error:
@@ -119,18 +121,31 @@ def _render_page(data: bytes, page_index: int, dpi: int):
 
     document = pdfium.PdfDocument(data)
     try:
-        return document[page_index].render(scale=dpi / 72).to_pil().convert("RGB")
+        rendered_pages: dict[int, bytes] = {}
+        for page_index in page_indexes:
+            page = document[page_index]
+            bitmap = None
+            try:
+                bitmap = page.render(scale=dpi / 72)
+                image = bitmap.to_pil().convert("RGB")
+                image_bytes = io.BytesIO()
+                image.save(image_bytes, format="PNG")
+                rendered_pages[page_index] = image_bytes.getvalue()
+            finally:
+                if bitmap is not None:
+                    bitmap.close()
+                page.close()
+        return rendered_pages
     finally:
         document.close()
 
 
-def _ocr_page(data: bytes, page_index: int, executable: str, language: str, dpi: int) -> str:
-    image = _render_page(data, page_index, dpi)
-    image_bytes = io.BytesIO()
-    image.save(image_bytes, format="PNG")
+def _ocr_image(image_bytes: bytes, executable: str, language: str) -> str:
+    """이미 렌더링된 이미지에 Tesseract subprocess만 실행한다."""
+
     completed = subprocess.run(
         [executable, "stdin", "stdout", "-l", language, "--psm", "6"],
-        input=image_bytes.getvalue(),
+        input=image_bytes,
         capture_output=True,
         timeout=120,
         check=True,
@@ -167,10 +182,11 @@ def extract_pdf_text(
         else:
             try:
                 language = _ocr_language(executable)
+                rendered_pages = _render_pages(data, sparse_pages, dpi)
                 worker_count = max(1, min(max_workers, len(sparse_pages)))
                 with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="registry-ocr") as executor:
                     futures = {
-                        executor.submit(_ocr_page, data, index, executable, language, dpi): index
+                        executor.submit(_ocr_image, rendered_pages[index], executable, language): index
                         for index in sparse_pages
                     }
                     for future in as_completed(futures):
