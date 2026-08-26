@@ -21,6 +21,7 @@ class DocumentAnalysis:
     extraction: ExtractionResult
     signals: tuple[RiskSignal, ...]
     common_checks: tuple[str, ...]
+    rag_queries: tuple[str, ...]
     disclaimer: str
     masked_text_preview: str = field(repr=False)
 

@@ -72,6 +72,11 @@ def render_sidebar() -> None:
         st.markdown("✓ 위험 키워드 규칙 점검")
         st.markdown("✓ 주의사항·근거 문구 표시")
         st.divider()
+        st.markdown("**후속 팀 개발**")
+        st.markdown("○ LangChain 공식 근거 검색")
+        st.markdown("○ LangGraph 답변·보류 라우팅")
+        st.markdown("○ LLM 질의응답 챗봇")
+        st.divider()
         st.caption("업로드 문서는 외부 API로 전송하지 않으며 서버 파일로 저장하지 않습니다.")
 
 
@@ -209,14 +214,37 @@ def render_results(result: DocumentAnalysis) -> None:
     )
 
 
+def render_future_integration() -> None:
+    st.subheader("후속 RAG·챗봇 연결 구조")
+    st.info("현재 화면의 위험 신호 결과는 LLM 없이 규칙으로 생성됩니다. 팀 개발 단계에서 아래 연결을 추가할 수 있습니다.")
+    st.code(
+        """등기 PDF
+  → 텍스트 추출·위험 신호 규칙 (현재 구현)
+  → 위험 신호별 RAG 검색 질의 생성 (현재 인터페이스 제공)
+  → LangChain Retriever로 법령·정부 가이드 검색
+  → LangGraph가 ANSWER / ABSTAIN / REFUSE 분기
+  → LLM 답변 + 코드가 조합한 공식 출처""",
+        language=None,
+    )
+    result = st.session_state.get("registry_analysis")
+    if result:
+        st.markdown("**이 문서에서 자동 생성된 후속 RAG 질의**")
+        for query in result.rag_queries:
+            st.markdown(f"- `{query}`")
+
+
 def main() -> None:
     configure_page()
     render_sidebar()
     render_header()
-    render_upload()
-    result = st.session_state.get("registry_analysis")
-    if result:
-        render_results(result)
+    check_tab, future_tab = st.tabs(["등기 주의 신호 점검", "RAG·챗봇 연결 안내"])
+    with check_tab:
+        render_upload()
+        result = st.session_state.get("registry_analysis")
+        if result:
+            render_results(result)
+    with future_tab:
+        render_future_integration()
 
 
 if __name__ == "__main__":

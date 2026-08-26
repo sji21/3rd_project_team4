@@ -7,6 +7,7 @@ from .extraction import extract_pdf_text
 from .extraction_models import ExtractionResult
 from .models import RiskSignal
 from .privacy import mask_sensitive_text
+from .rag_handoff import build_rag_queries
 from .risk_rules import detect_risk_signals
 
 
@@ -62,6 +63,7 @@ def analyze_registry_pdf(filename: str, data: bytes) -> DocumentAnalysis:
         extraction=extraction,
         signals=signals,
         common_checks=COMMON_CHECKS,
+        rag_queries=build_rag_queries(signals),
         disclaimer=DISCLAIMER,
         masked_text_preview=mask_sensitive_text(extraction.text[:12000]),
     )

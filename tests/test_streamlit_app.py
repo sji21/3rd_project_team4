@@ -19,6 +19,7 @@ def test_initial_screen_has_upload_consent_and_disabled_action() -> None:
     app = load_app()
 
     assert not app.exception
+    assert [tab.label for tab in app.tabs] == ["등기 주의 신호 점검", "RAG·챗봇 연결 안내"]
     assert app.get("file_uploader")
     assert app.checkbox[0].value is False
     assert app.button[0].label == "주의 신호 점검하기"
