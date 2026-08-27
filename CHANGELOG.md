@@ -10,6 +10,10 @@
 
 - Organized planning documents, reference assets, and the shareable PDF under `docs/planning/`; moved the cross-platform PDF builder to `scripts/` and documented its reproducible paths and dependencies. (commit: `0185314`)
 
+### Added
+
+- Added a versioned SQLite knowledge schema for laws, articles, cases, official guides, registry-risk evidence and evaluation references, plus an idempotent Chroma collection initializer and documented source-to-vector relationships. (commit: `0d7f02c`)
+
 ## 2026-08-26
 
 ### Added
