@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-27
+
+### Fixed (Bug Fixes)
+
+- Fixed unreadable white text on the light Streamlit background by applying an explicit high-contrast light theme. (commit: `26f8cd1`)
+
 ## 2026-08-26
 
 ### Added
