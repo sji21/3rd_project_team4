@@ -11,4 +11,5 @@ Pillow>=12,<13
 lxml
 ragas
 python-dotenv
+reportlab
 pytest

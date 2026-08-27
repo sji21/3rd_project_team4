@@ -9,6 +9,7 @@
 ```
 jeonse-on/
 ├─ app/                # 사용자 화면 (Streamlit)
+├─ scripts/            # 문서 생성 등 개발 보조 명령
 ├─ src/
 │  ├─ ingestion/       # 수집 · 정제 · 청킹
 │  ├─ retrieval/       # 임베딩 · Vector DB · Retriever
@@ -23,10 +24,15 @@ jeonse-on/
 ├─ tests/
 ├─ docs/
 │  ├─ document-card.md
-│  └─ corpus-audit.md
+│  ├─ corpus-audit.md
+│  └─ planning/        # 기획서 원문·공유 PDF·구조 이미지
+│     ├─ assets/
+│     └─ reference/
 ├─ .env.example
 └─ requirements.txt
 ```
+
+`data/`에는 RAG 수집·평가·샘플 데이터만 둔다. 프로젝트 기획 자료는 `docs/planning/`, 재사용 가능한 생성·관리 명령은 `scripts/`에 둔다.
 
 ## 실행
 
@@ -55,8 +61,20 @@ streamlit run app/streamlit_app.py
 pytest -q
 ```
 
+## 기획서 PDF 재생성
+
+```bash
+python scripts/build_project_plan_pdf.py
+```
+
+입력은 `docs/planning/project-plan.md`, 출력은 `docs/planning/jeonseon-project-plan.pdf`이다. PDF 생성에는 `reportlab`과 한국어 TTF 글꼴이 필요하다. macOS의 AppleGothic, Windows의 맑은 고딕과 일부 Linux Nanum/Noto 경로를 자동 탐색하며, 찾지 못하면 `.env` 또는 실행 환경의 `KOREAN_FONT_PATH`에 글꼴 경로를 지정한다.
+
 ## 참고 문서
 
 - `docs/registry-check.md` — 등기 PDF 점검 실행법, 구조, 한계와 후속 RAG 연결
 - `docs/rag-handoff.md` — LangChain Retriever와 LangGraph 연결 경계
 - `docs/windows-verification.md` — Windows 설치·테스트 절차와 검증 기록
+- `docs/planning/project-plan.md` — 프로젝트 범위, 아키텍처, 평가와 단계별 실행 기획
+- `docs/planning/jeonseon-project-plan.pdf` — 팀 공유용 프로젝트 실행 기획서
+- `docs/planning/assets/` — 파이프라인과 프로젝트 단계 참고 이미지
+- `docs/planning/reference/` — 기획서 작성에 사용한 기준 자료
