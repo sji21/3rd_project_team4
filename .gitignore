@@ -2,6 +2,7 @@
 data/raw/
 data/parsed/
 data/chunks/
+data/database/
 data/index/
 
 # 환경 변수 · 비밀정보
