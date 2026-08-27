@@ -18,6 +18,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable, Protocol
 
+from src.retrieval.terms import expand
+
 # 한글 음절 / 한자 / 영숫자 덩어리를 하나의 낱말로 끊는다.
 _WORD_RE = re.compile(r"[가-힣]+|[一-龥]+|[A-Za-z]+|[0-9]+")
 # "제3조의2", "제88조" 같은 조문 지시어. 법령 검색에서 가장 중요한 정확일치 신호.
@@ -48,10 +50,37 @@ def tokenize(text: str, char_ngram: int = 2) -> list[str]:
     return tokens
 
 
+def matches(metadata: dict, where: dict | None) -> bool:
+    """Chroma 의 where 절과 같은 형태의 메타데이터 필터.
+
+    나중에 Chroma 로 갈아탈 때 필터 정의를 그대로 옮길 수 있도록 문법을 맞춘다.
+
+        {"status": "current"}                      같음
+        {"doc_type": {"$in": ["law", "decree"]}}  포함
+        {"title": {"$nin": ["상가건물 임대차보호법"]}}  제외
+    """
+    if not where:
+        return True
+    for field, cond in where.items():
+        value = metadata.get(field)
+        if isinstance(cond, dict):
+            if "$in" in cond and value not in cond["$in"]:
+                return False
+            if "$nin" in cond and value in cond["$nin"]:
+                return False
+            if "$ne" in cond and value == cond["$ne"]:
+                return False
+        elif value != cond:
+            return False
+    return True
+
+
 class Retriever(Protocol):
     """모든 검색기가 지켜야 할 최소 약속."""
 
-    def search(self, query: str, k: int) -> list[tuple[str, float]]:
+    def search(
+        self, query: str, k: int, where: dict | None = None
+    ) -> list[tuple[str, float]]:
         ...
 
 
@@ -89,18 +118,41 @@ class BM25Retriever:
             term: math.log(1 + (n_docs - n + 0.5) / (n + 0.5)) for term, n in df.items()
         }
 
-    def search(self, query: str, k: int) -> list[tuple[str, float]]:
-        q_tokens = tokenize(query, self.char_ngram)
+    def search(
+        self,
+        query: str,
+        k: int,
+        where: dict | None = None,
+        expand_weight: float = 0.0,
+    ) -> list[tuple[str, float]]:
+        """expand_weight > 0 이면 용어 사전으로 질의를 넓힌다.
+
+        덧붙인 법률 용어는 사용자가 실제로 친 낱말보다 낮은 가중치를 준다.
+        사전이 틀렸을 때 원래 질문을 덮어쓰지 않게 하려는 것이다.
+        """
+        q_terms: list[tuple[str, float]] = [
+            (t, 1.0) for t in tokenize(query, self.char_ngram)
+        ]
+        if expand_weight > 0:
+            for added in expand(query):
+                q_terms += [
+                    (t, expand_weight) for t in tokenize(added, self.char_ngram)
+                ]
+
         scores: list[tuple[str, float]] = []
 
         for i, freqs in enumerate(self.doc_freqs):
+            # Chroma 와 마찬가지로 점수 계산 전에 후보를 걸러낸다.
+            # IDF 는 전체 코퍼스 기준을 유지한다(필터마다 재계산하지 않음).
+            if where and not matches(self.chunks[i]["metadata"], where):
+                continue
             score = 0.0
             norm = self.k1 * (1 - self.b + self.b * self.doc_lens[i] / self.avg_len)
-            for term in q_tokens:
+            for term, weight in q_terms:
                 tf = freqs.get(term)
                 if not tf:
                     continue
-                score += self.idf.get(term, 0.0) * tf * (self.k1 + 1) / (tf + norm)
+                score += weight * self.idf.get(term, 0.0) * tf * (self.k1 + 1) / (tf + norm)
             if score > 0:
                 scores.append((self.chunk_ids[i], score))
 
@@ -146,17 +198,21 @@ class TfidfRetriever:
     def _norm(vector: dict[str, float]) -> float:
         return math.sqrt(sum(weight * weight for weight in vector.values()))
 
-    def search(self, query: str, k: int) -> list[tuple[str, float]]:
+    def search(
+        self, query: str, k: int, where: dict | None = None
+    ) -> list[tuple[str, float]]:
         query_vector = self._vector(Counter(tokenize(query, self.char_ngram)))
         query_norm = self._norm(query_vector)
         if query_norm == 0:
             return []
 
         scores: list[tuple[str, float]] = []
-        for chunk_id, doc_vector, doc_norm in zip(
-            self.chunk_ids, self.doc_vectors, self.doc_norms
+        for chunk, chunk_id, doc_vector, doc_norm in zip(
+            self.chunks, self.chunk_ids, self.doc_vectors, self.doc_norms
         ):
             if doc_norm == 0:
+                continue
+            if where and not matches(chunk["metadata"], where):
                 continue
             dot = sum(
                 weight * doc_vector.get(term, 0.0)
