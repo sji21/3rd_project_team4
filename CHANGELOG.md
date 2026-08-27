@@ -13,6 +13,7 @@
 ### Added
 
 - Added a versioned SQLite knowledge schema for laws, articles, cases, official guides, registry-risk evidence and evaluation references, plus an idempotent Chroma collection initializer and documented source-to-vector relationships. (commit: `0d7f02c`)
+- Added local OCR-based housing lease contract checks for PDF and mobile-captured JPG/JPEG/PNG files, including image validation and EXIF rotation correction, written core values, visually unverifiable signatures, detected special-term concepts, registry-linked clause recommendations, official references, and privacy-reduced JSON export. (commit: `3192b4b`)
 
 ## 2026-08-26
 
