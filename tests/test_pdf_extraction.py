@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
+from PIL import Image
 
 from src.document_check import extraction
 from src.document_check.extraction import DocumentValidationError, PdfInspection
@@ -20,6 +23,41 @@ from src.document_check.extraction import DocumentValidationError, PdfInspection
 def test_validate_pdf_rejects_invalid_uploads(filename: str, data: bytes, message: str) -> None:
     with pytest.raises(DocumentValidationError, match=message):
         extraction.validate_pdf(filename, data)
+
+
+def image_bytes(format_name: str = "PNG") -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (320, 240), "white").save(output, format=format_name)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("filename", ["contract.png", "contract.jpg", "contract.jpeg"])
+def test_extract_document_accepts_contract_image_extensions(monkeypatch, filename: str) -> None:
+    monkeypatch.setattr(extraction, "find_tesseract", lambda: "/test/tesseract")
+    monkeypatch.setattr(extraction, "_ocr_language", lambda _: "kor+eng")
+
+    def fake_ocr(data: bytes, *_: str) -> str:
+        assert data.startswith(b"\x89PNG")
+        return "주택 임대차계약서 보증금 1억원"
+
+    monkeypatch.setattr(extraction, "_ocr_image", fake_ocr)
+    source_format = "PNG" if filename.endswith("png") else "JPEG"
+
+    result = extraction.extract_document_text(filename, image_bytes(source_format))
+
+    assert result.pages[0].method == "tesseract"
+    assert "임대차계약서" in result.text
+
+
+def test_extract_document_rejects_broken_or_unsupported_image() -> None:
+    with pytest.raises(extraction.DocumentValidationError, match="손상"):
+        extraction.extract_document_text("contract.png", b"not an image")
+
+    with pytest.raises(extraction.DocumentValidationError, match="PDF, JPG, JPEG, PNG"):
+        extraction.extract_document_text("contract.webp", image_bytes())
+
+    with pytest.raises(extraction.DocumentValidationError, match="확장자"):
+        extraction.extract_document_text("contract.jpg", image_bytes("PNG"))
 
 
 def test_uses_embedded_text_without_tesseract(monkeypatch: pytest.MonkeyPatch) -> None:

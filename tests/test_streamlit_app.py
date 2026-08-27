@@ -19,8 +19,12 @@ def test_initial_screen_has_upload_consent_and_disabled_action() -> None:
     app = load_app()
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["등기 주의 신호 점검", "RAG·챗봇 연결 안내"]
-    assert app.get("file_uploader")
+    assert [tab.label for tab in app.tabs] == [
+        "등기 주의 신호 점검",
+        "임대차계약서 점검",
+        "RAG·챗봇 연결 안내",
+    ]
+    assert len(app.get("file_uploader")) == 2
     assert app.checkbox[0].value is False
     assert app.button[0].label == "주의 신호 점검하기"
     assert app.button[0].disabled is True
@@ -35,3 +39,25 @@ def test_invalid_pdf_shows_validation_error() -> None:
 
     assert not app.exception
     assert any("PDF 형식" in error.value for error in app.error)
+
+
+def test_contract_upload_has_separate_consent_and_validation() -> None:
+    app = load_app()
+    app.get("file_uploader")[1].upload("contract.pdf", b"not a pdf", "application/pdf")
+    app.checkbox[1].check()
+    app.button[1].click()
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert any("PDF 형식" in error.value for error in app.error)
+
+
+def test_contract_upload_accepts_image_and_validates_its_contents() -> None:
+    app = load_app()
+    app.get("file_uploader")[1].upload("contract.png", b"not an image", "image/png")
+    app.checkbox[1].check()
+    app.button[1].click()
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert any("손상" in error.value for error in app.error)

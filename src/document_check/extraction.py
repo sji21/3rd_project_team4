@@ -1,4 +1,4 @@
-"""PDF 내장 텍스트를 우선 사용하고 필요한 페이지만 로컬 OCR로 보강한다."""
+"""PDF와 계약서 촬영 이미지에서 로컬로 텍스트를 추출한다."""
 
 from __future__ import annotations
 
@@ -12,13 +12,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pdfplumber
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .extraction_models import ExtractionResult, PageExtraction
 
 
 MAX_FILE_SIZE = 20 * 1024 * 1024
 MAX_PAGE_COUNT = 30
+MAX_IMAGE_PIXELS = 40_000_000
 MIN_TEXT_CHARACTERS = 80
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+IMAGE_FORMATS = {"JPEG", "PNG"}
 
 
 class DocumentValidationError(ValueError):
@@ -44,6 +48,44 @@ def validate_pdf(filename: str, data: bytes) -> None:
         raise DocumentValidationError("파일 크기는 20MB 이하여야 합니다.")
     if not data.lstrip().startswith(b"%PDF"):
         raise DocumentValidationError("PDF 형식을 확인할 수 없습니다.")
+
+
+def _validate_file_size(data: bytes) -> None:
+    if not data:
+        raise DocumentValidationError("업로드한 파일이 비어 있습니다.")
+    if len(data) > MAX_FILE_SIZE:
+        raise DocumentValidationError("파일 크기는 20MB 이하여야 합니다.")
+
+
+def _normalized_image_bytes(filename: str, data: bytes) -> bytes:
+    """촬영 이미지의 실제 형식과 크기를 검증하고 회전을 보정해 PNG로 반환한다."""
+
+    extension = Path(filename).suffix.lower()
+    if extension not in IMAGE_EXTENSIONS:
+        raise DocumentValidationError("계약서는 PDF, JPG, JPEG, PNG 파일만 업로드할 수 있습니다.")
+    _validate_file_size(data)
+
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            if source.format not in IMAGE_FORMATS:
+                raise DocumentValidationError("JPG 또는 PNG 이미지 형식을 확인할 수 없습니다.")
+            expected_format = "PNG" if extension == ".png" else "JPEG"
+            if source.format != expected_format:
+                raise DocumentValidationError("파일 확장자와 실제 이미지 형식이 일치하지 않습니다.")
+            width, height = source.size
+            if width < 1 or height < 1 or width * height > MAX_IMAGE_PIXELS:
+                raise DocumentValidationError("이미지 해상도는 4천만 픽셀 이하여야 합니다.")
+            source.verify()
+
+        with Image.open(io.BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            output = io.BytesIO()
+            image.save(output, format="PNG")
+            return output.getvalue()
+    except DocumentValidationError:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as error:
+        raise DocumentValidationError("손상되었거나 지원하지 않는 이미지입니다.") from error
 
 
 def inspect_pdf(data: bytes) -> PdfInspection:
@@ -221,3 +263,46 @@ def extract_pdf_text(
         elapsed_seconds=round(time.perf_counter() - started, 3),
         warnings=tuple(warnings),
     )
+
+
+def extract_image_text(filename: str, data: bytes) -> ExtractionResult:
+    """JPG·JPEG·PNG 촬영본을 보정한 뒤 한 페이지로 OCR한다."""
+
+    started = time.perf_counter()
+    image_bytes = _normalized_image_bytes(filename, data)
+    executable = find_tesseract()
+    warnings: list[str] = []
+    text = ""
+
+    if not executable:
+        warnings.append("계약서 이미지 OCR에 필요한 Tesseract를 찾지 못했습니다.")
+    else:
+        try:
+            language = _ocr_language(executable)
+            text = _ocr_image(image_bytes, executable, language)
+        except (OcrUnavailableError, subprocess.SubprocessError, TimeoutError) as error:
+            warnings.append(f"계약서 이미지 OCR 실패: {error}")
+
+    method = "tesseract" if text else "unreadable"
+    page = PageExtraction(
+        page_number=1,
+        text=text,
+        method=method,
+        character_count=_meaningful_character_count(text),
+    )
+    return ExtractionResult(
+        pages=(page,),
+        elapsed_seconds=round(time.perf_counter() - started, 3),
+        warnings=tuple(warnings),
+    )
+
+
+def extract_document_text(filename: str, data: bytes) -> ExtractionResult:
+    """확장자에 따라 PDF 또는 촬영 이미지 추출기로 전달한다."""
+
+    extension = Path(filename).suffix.lower()
+    if extension == ".pdf":
+        return extract_pdf_text(filename, data)
+    if extension in IMAGE_EXTENSIONS:
+        return extract_image_text(filename, data)
+    raise DocumentValidationError("계약서는 PDF, JPG, JPEG, PNG 파일만 업로드할 수 있습니다.")

@@ -16,6 +16,7 @@ jeonse-on/
 │  ├─ retrieval/       # 임베딩 · Vector DB · Retriever
 │  ├─ generation/      # Prompt · Chain · 인용 검증
 │  ├─ document_check/  # 등기 PDF 추출 · OCR · 위험 신호 규칙
+│  ├─ contract_check/  # 임대차계약서 항목 · 특약 점검
 │  └─ evaluation/      # 평가 지표 · 실험 비교
 ├─ data/
 │  ├─ raw/ parsed/ chunks/           # gitignore (재수집/재생성 가능)
@@ -57,6 +58,11 @@ streamlit run app/streamlit_app.py
 - 근거 문구, 추가 확인사항, 공식 참고자료 표시
 - 개인정보를 제외한 JSON 결과 다운로드
 - 후속 RAG Retriever용 자동 질의 생성
+- 주택 임대차계약서 PDF와 휴대폰 촬영 JPG·JPEG·PNG의 핵심 작성값 탐지
+- 계약서 촬영 이미지의 실제 형식·해상도 검증과 EXIF 회전 보정 후 로컬 OCR
+- 공란 가능 항목과 OCR 판독 불명확 항목 구분
+- 기존 특약 문구 탐지와 공식 가이드 기반 협의 항목 추천
+- 앞서 탐지한 등기 위험신호와 관련 특약 연결
 
 ## 지식 DB 구조
 
@@ -200,6 +206,7 @@ python scripts/build_project_plan_pdf.py
 - `docs/registry-check.md` — 등기 PDF 점검 실행법, 구조, 한계와 후속 RAG 연결
 - `docs/rag-handoff.md` — LangChain Retriever와 LangGraph 연결 경계
 - `docs/windows-verification.md` — Windows 설치·테스트 절차와 검증 기록
+- `docs/contract-check.md` — 임대차계약서 작성 항목·특약 점검 기준과 한계
 - `docs/planning/project-plan.md` — 프로젝트 범위, 아키텍처, 평가와 단계별 실행 기획
 - `docs/planning/jeonseon-project-plan.pdf` — 팀 공유용 프로젝트 실행 기획서
 - `docs/planning/assets/` — 파이프라인과 프로젝트 단계 참고 이미지
