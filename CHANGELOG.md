@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-28
+
+### Changed
+
+- Expanded relational document and RAG chunk source types to support laws, decrees, ministerial rules, cases, legal interpretations, and official guides while continuing to reject unknown types. (commit: `8d2299e`)
+
 ## 2026-08-27
 
 ### Fixed (Bug Fixes)
