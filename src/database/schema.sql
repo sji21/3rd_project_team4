@@ -9,7 +9,8 @@ INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);
 
 CREATE TABLE IF NOT EXISTS documents (
     document_id TEXT PRIMARY KEY,
-    document_type TEXT NOT NULL CHECK (document_type IN ('law', 'case', 'guide')),
+    document_type TEXT NOT NULL
+        CHECK (document_type IN ('law', 'decree', 'rule', 'case', 'interp', 'guide')),
     title TEXT NOT NULL,
     agency TEXT NOT NULL,
     source_url TEXT NOT NULL,
@@ -141,7 +142,8 @@ CREATE TABLE IF NOT EXISTS rule_evidence (
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE,
-    source_type TEXT NOT NULL CHECK (source_type IN ('law', 'case', 'guide')),
+    source_type TEXT NOT NULL
+        CHECK (source_type IN ('law', 'decree', 'rule', 'case', 'interp', 'guide')),
     article_id TEXT REFERENCES law_articles(article_id) ON DELETE CASCADE,
     case_id TEXT REFERENCES cases(case_id) ON DELETE CASCADE,
     guide_id TEXT REFERENCES guides(guide_id) ON DELETE CASCADE,

@@ -109,6 +109,19 @@ python scripts/init_databases.py \
 
 초기화는 멱등적이다. 같은 명령을 다시 실행해도 테이블이나 컬렉션을 중복 생성하지 않는다. 현재 초기화는 스키마와 빈 검색 컬렉션을 만들며, 공식 문서 수집·파싱·청킹·임베딩 적재는 후속 ingestion/indexing 단계에서 수행한다.
 
+`documents.document_type`과 `chunks.source_type`은 다음 공식 자료 유형을 허용한다.
+
+| 값 | 자료 유형 |
+| --- | --- |
+| `law` | 법률 |
+| `decree` | 대통령령·시행령 |
+| `rule` | 부령·시행규칙 |
+| `case` | 판례 |
+| `interp` | 법령해석·유권해석 |
+| `guide` | 정부·공공기관 공식 안내 |
+
+스키마 파일의 `CHECK` 제약 변경은 이미 생성된 SQLite 테이블을 자동 변경하지 않는다. 현재 개발 단계의 생성 DB는 필요한 데이터를 백업한 뒤 `data/database/knowledge.sqlite3`을 새로 생성해야 변경된 유형이 적용된다. 운영 데이터가 생긴 이후에는 파일 삭제 대신 별도 스키마 마이그레이션으로 테이블을 재구성해야 한다.
+
 ### 관계형 DB 테이블
 
 스키마 원본은 `src/database/schema.sql`이다.

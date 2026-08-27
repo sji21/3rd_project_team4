@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "evaluation_questions",
     "evaluation_evidence",
 }
+SUPPORTED_SOURCE_TYPES = ("law", "decree", "rule", "case", "interp", "guide")
 
 
 def insert_law_and_case(connection: sqlite3.Connection) -> None:
@@ -145,6 +146,91 @@ def test_preserves_case_to_law_article_relationship(tmp_path: Path) -> None:
         "case_number": "2026다1234",
         "article_number": "제3조의3",
     }
+
+
+def test_accepts_all_supported_document_and_chunk_types(tmp_path: Path) -> None:
+    path = tmp_path / "knowledge.sqlite3"
+    initialize_relational_database(path)
+
+    with connect_database(path) as connection:
+        for source_type in SUPPORTED_SOURCE_TYPES:
+            connection.execute(
+                """
+                INSERT INTO documents
+                    (document_id, document_type, title, agency, source_url,
+                     collected_at, checksum, status, file_path)
+                VALUES (?, ?, ?, '공식기관', ?, '2026-08-28', ?, 'current', ?)
+                """,
+                (
+                    f"doc-{source_type}",
+                    source_type,
+                    f"{source_type} 문서",
+                    f"https://example.test/{source_type}",
+                    f"{source_type}-checksum",
+                    f"data/raw/{source_type}.json",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO chunks
+                    (chunk_id, document_id, source_type, chunk_index, content,
+                     token_count, checksum, parser_version)
+                VALUES (?, ?, ?, 0, '공식 문서 청크', 4, ?, 'test-v1')
+                """,
+                (
+                    f"chunk-{source_type}",
+                    f"doc-{source_type}",
+                    source_type,
+                    f"chunk-{source_type}-checksum",
+                ),
+            )
+
+        document_types = {
+            row[0] for row in connection.execute("SELECT document_type FROM documents")
+        }
+        chunk_types = {row[0] for row in connection.execute("SELECT source_type FROM chunks")}
+
+    assert document_types == set(SUPPORTED_SOURCE_TYPES)
+    assert chunk_types == set(SUPPORTED_SOURCE_TYPES)
+
+
+def test_rejects_unsupported_document_and_chunk_types(tmp_path: Path) -> None:
+    path = tmp_path / "knowledge.sqlite3"
+    initialize_relational_database(path)
+
+    with connect_database(path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO documents
+                    (document_id, document_type, title, agency, source_url,
+                     collected_at, checksum, status, file_path)
+                VALUES ('doc-unknown', 'unknown', '미지원 문서', '기관',
+                        'https://example.test/unknown', '2026-08-28',
+                        'unknown-checksum', 'current', 'data/raw/unknown.json')
+                """
+            )
+
+        connection.execute(
+            """
+            INSERT INTO documents
+                (document_id, document_type, title, agency, source_url,
+                 collected_at, checksum, status, file_path)
+            VALUES ('doc-guide', 'guide', '공식 안내', '기관',
+                    'https://example.test/guide', '2026-08-28',
+                    'guide-checksum', 'current', 'data/raw/guide.json')
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO chunks
+                    (chunk_id, document_id, source_type, chunk_index, content,
+                     token_count, checksum, parser_version)
+                VALUES ('chunk-unknown', 'doc-guide', 'unknown', 0,
+                        '미지원 청크', 2, 'chunk-unknown-checksum', 'test-v1')
+                """
+            )
 
 
 def test_rejects_evidence_without_exactly_one_source(tmp_path: Path) -> None:
