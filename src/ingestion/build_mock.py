@@ -24,6 +24,7 @@ EFFECTIVE_DATE = "2026-01-02"
 SOURCE_BASE = "https://www.law.go.kr/법령/주택임대차보호법"
 
 OUT_PATH = Path("data/sample/chunks_mock.jsonl")
+ENRICHED_PATH = Path("data/sample/chunks_mock_enriched.jsonl")
 
 
 # (조문번호, 조문제목, 본문, 참조 조문 목록)
@@ -278,11 +279,42 @@ ARTICLES: list[tuple[str, str, str, list[str]]] = [
 ]
 
 
-def build_law_chunks() -> list[dict]:
+# [A2 실험] 조문마다 붙이는 일상어 설명.
+# 법령은 "월차임 전환"이라고 쓰지만 사용자는 "반전세"라고 묻는다. 그 간극을 메우려고
+# 조문이 실제로 언제 쓰이는 조항인지를 생활 언어로 한 줄 적어 색인 대상에 포함한다.
+# 사용자에게 보여주는 원문은 그대로 두고, 검색용 텍스트에만 덧붙인다.
+SUMMARIES: dict[str, str] = {
+    "제1조": "이 법이 왜 존재하는지 정한 조항. 세입자를 보호하려고 민법에 예외를 둔다는 선언.",
+    "제2조": "어떤 집에 이 법이 적용되는지 정한 조항. 사람이 사는 건물이면 적용되고, 일부를 가게처럼 써도 적용된다.",
+    "제3조": "이사해서 살고 전입신고를 마치면 다음 날부터 권리가 생긴다. 살던 중에 집주인이 바뀌거나 집이 팔려도 계속 살 수 있고, 새 주인에게 보증금을 요구할 수 있다.",
+    "제3조의2": "전입신고와 확정일자를 갖추면 집이 경매나 공매로 넘어갔을 때 다른 빚쟁이보다 먼저 보증금을 받는다. 근저당 같은 다른 권리와 순서를 다투는 상황에서 쓰인다.",
+    "제3조의3": "계약이 끝났는데 보증금을 못 받은 채로 이사를 나가야 할 때 쓰는 제도. 법원에 신청해 등기를 남겨두면 집을 비우고 나간 뒤에도 권리가 그대로 유지된다. 드는 비용은 집주인에게 청구할 수 있다.",
+    "제3조의5": "집이 경매로 넘어가면 세입자 권리는 원칙적으로 사라지지만, 보증금을 다 못 받았고 대항력이 있으면 남는다.",
+    "제3조의6": "확정일자를 어디서 어떻게 받는지, 그리고 그 집의 보증금 정보를 누가 열람할 수 있는지 정한 조항.",
+    "제3조의7": "계약할 때 집주인이 세입자에게 보여줘야 하는 것들. 그 집의 보증금 정보와, 세금을 안 낸 게 없다는 증명서가 포함된다.",
+    "제4조": "계약서에 2년보다 짧게 적었어도 세입자는 2년을 주장할 수 있다. 그리고 기간이 끝나도 보증금을 돌려받기 전까지는 계약이 계속되는 것으로 본다.",
+    "제6조": "집주인도 세입자도 아무 말 없이 기간이 지나면 같은 조건으로 자동 연장되고 2년이 된다. 흔히 묵시적 갱신이라고 부른다.",
+    "제6조의2": "자동 연장된 뒤에 세입자가 중간에 나가고 싶을 때. 언제든 통보할 수 있고 통보한 지 3개월이 지나면 효력이 생긴다.",
+    "제6조의3": "세입자가 계약을 더 연장해달라고 요구할 수 있는 권리. 딱 한 번 쓸 수 있고 2년이 늘어난다. 집주인이 직접 들어와 살겠다는 이유로 거절할 수 있지만 거짓이면 손해를 물어줘야 한다.",
+    "제7조": "집주인이 보증금이나 월세를 올려달라고 할 때의 한도. 1년에 한 번만 가능하고 기존 금액의 20분의 1을 넘을 수 없다.",
+    "제7조의2": "전세를 월세나 반전세로 바꿀 때 월세를 얼마까지 매길 수 있는지 계산 기준을 정한 조항.",
+    "제8조": "보증금이 적은 세입자는 집이 경매로 넘어가도 일정 금액까지는 근저당보다도 먼저 받는다. 흔히 최우선변제라고 부른다.",
+    "제9조": "세입자가 사망했을 때 같이 살던 사실혼 배우자나 친족이 계약을 이어받는다.",
+    "제10조": "이 법을 어기면서 세입자에게 불리하게 만든 특약은 효력이 없다. 계약서 특약이 문제될 때 근거가 된다.",
+    "제10조의2": "법이 정한 상한을 넘겨서 더 올려준 보증금이나 월세는 돌려달라고 청구할 수 있다.",
+    "제12조": "등기를 하지 않은 전세계약에도 이 법이 그대로 적용된다.",
+    "제14조": "집주인과 다툼이 생겼을 때 소송 대신 조정을 신청할 수 있는 기구와, 다룰 수 있는 분쟁의 종류.",
+}
+
+
+def build_law_chunks(with_summary: bool = False) -> list[dict]:
     chunks = []
     for idx, (article_no, article_title, body, refs) in enumerate(ARTICLES):
         header = f"[{LAW_TITLE} {article_no}({article_title})]"
-        text = f"{header}\n{body}"
+        if with_summary and article_no in SUMMARIES:
+            text = f"{header}\n쉬운 설명: {SUMMARIES[article_no]}\n{body}"
+        else:
+            text = f"{header}\n{body}"
         chunks.append(
             {
                 "chunk_id": f"{DOC_ID}#{article_no}#0",
@@ -365,13 +397,38 @@ GUIDE_CHUNKS: list[dict] = [
 ]
 
 
-def main() -> None:
-    chunks = build_law_chunks() + GUIDE_CHUNKS
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with OUT_PATH.open("w", encoding="utf-8") as f:
+GUIDE_SUMMARIES: dict[str, str] = {
+    "guide-HUG-전세보증금반환보증": "계약이 끝났는데 집주인이 보증금을 안 돌려줄 때, 보증기관이 대신 지급해주는 상품 안내.",
+    "guide-국세청-미납국세열람": "계약 전후에 집주인이 세금을 안 낸 게 있는지 확인하는 방법 안내.",
+}
+
+
+def with_guide_summaries(chunks: list[dict]) -> list[dict]:
+    out = []
+    for c in chunks:
+        c = json.loads(json.dumps(c))  # 원본을 건드리지 않도록 복사
+        summary = GUIDE_SUMMARIES.get(c["doc_id"])
+        if summary:
+            head, _, rest = c["text"].partition("\n")
+            c["text"] = f"{head}\n쉬운 설명: {summary}\n{rest}"
+        out.append(c)
+    return out
+
+
+def write(chunks: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
         for chunk in chunks:
             f.write(json.dumps(chunk, ensure_ascii=False) + "\n")
-    print(f"{len(chunks)}개 청크를 {OUT_PATH} 에 기록했습니다.")
+    print(f"{len(chunks)}개 청크를 {path} 에 기록했습니다.")
+
+
+def main() -> None:
+    write(build_law_chunks() + GUIDE_CHUNKS, OUT_PATH)
+    write(
+        build_law_chunks(with_summary=True) + with_guide_summaries(GUIDE_CHUNKS),
+        ENRICHED_PATH,
+    )
 
 
 if __name__ == "__main__":
