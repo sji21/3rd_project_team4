@@ -26,7 +26,7 @@ from src.evaluation.metrics import (
     reciprocal_rank,
     standard_error,
 )
-from src.retrieval.retriever import BM25Retriever, chunk_to_article, load_chunks
+from src.retrieval.retriever import BM25Retriever, Retriever, chunk_to_article, load_chunks
 
 RUNS_DIR = Path("data/eval/runs")
 
@@ -59,7 +59,7 @@ def check_gold_exists(questions: list[dict], chunks: list[dict]) -> list[str]:
 def run(
     questions: list[dict],
     chunks: list[dict],
-    retriever: BM25Retriever,
+    retriever: Retriever,
     run_id: str,
     k: int,
 ) -> RunResult:

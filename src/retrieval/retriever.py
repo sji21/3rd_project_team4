@@ -4,7 +4,7 @@
 
     search(query, k) -> [(chunk_id, score), ...]   점수 내림차순
 
-지금은 외부 API 없이 돌아가는 BM25(어휘 기반)만 구현되어 있다.
+지금은 외부 API 없이 돌아가는 BM25와 TF-IDF(둘 다 어휘 기반)가 구현되어 있다.
 임베딩 기반 Dense 검색은 팀원의 인덱싱 파이프라인이 준비되면
 같은 인터페이스로 DenseRetriever 를 추가하면 된다.
 """
@@ -106,6 +106,66 @@ class BM25Retriever:
 
         # 동점일 때 순서가 흔들리면 같은 설정을 두 번 돌려도 점수가 달라진다.
         # chunk_id 를 2차 정렬 기준으로 두어 결정론적으로 만든다.
+        scores.sort(key=lambda x: (-x[1], x[0]))
+        return scores[:k]
+
+
+class TfidfRetriever:
+    """TF-IDF 코사인 유사도로 순위를 매기는 가벼운 어휘 검색기.
+
+    외부 패키지나 API 없이 BM25와 같은 토큰을 사용한다. 따라서 이번 비교는
+    토큰화 차이가 아니라 순위 산정 방식(BM25 vs TF-IDF)의 차이를 측정한다.
+    """
+
+    def __init__(self, chunks: list[dict], char_ngram: int = 2) -> None:
+        self.chunks = chunks
+        self.char_ngram = char_ngram
+        self.chunk_ids = [c["chunk_id"] for c in chunks]
+        self.doc_freqs = [Counter(tokenize(c["text"], char_ngram)) for c in chunks]
+
+        n_docs = len(chunks)
+        df: Counter[str] = Counter()
+        for freqs in self.doc_freqs:
+            df.update(freqs.keys())
+        self.idf = {
+            term: math.log((1 + n_docs) / (1 + frequency)) + 1
+            for term, frequency in df.items()
+        }
+
+        self.doc_vectors = [self._vector(freqs) for freqs in self.doc_freqs]
+        self.doc_norms = [self._norm(vector) for vector in self.doc_vectors]
+
+    def _vector(self, freqs: Counter[str]) -> dict[str, float]:
+        return {
+            term: (1 + math.log(count)) * self.idf[term]
+            for term, count in freqs.items()
+            if term in self.idf and count > 0
+        }
+
+    @staticmethod
+    def _norm(vector: dict[str, float]) -> float:
+        return math.sqrt(sum(weight * weight for weight in vector.values()))
+
+    def search(self, query: str, k: int) -> list[tuple[str, float]]:
+        query_vector = self._vector(Counter(tokenize(query, self.char_ngram)))
+        query_norm = self._norm(query_vector)
+        if query_norm == 0:
+            return []
+
+        scores: list[tuple[str, float]] = []
+        for chunk_id, doc_vector, doc_norm in zip(
+            self.chunk_ids, self.doc_vectors, self.doc_norms
+        ):
+            if doc_norm == 0:
+                continue
+            dot = sum(
+                weight * doc_vector.get(term, 0.0)
+                for term, weight in query_vector.items()
+            )
+            score = dot / (query_norm * doc_norm)
+            if score > 0:
+                scores.append((chunk_id, score))
+
         scores.sort(key=lambda x: (-x[1], x[0]))
         return scores[:k]
 

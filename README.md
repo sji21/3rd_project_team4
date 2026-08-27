@@ -57,3 +57,16 @@ python -m src.evaluation.run_eval --run-id exp01-k8 --k 8 --compare baseline
 
 실제 코퍼스로 교체할 때는 `--chunks` 경로만 바꾸면 됩니다. 청크 스키마는
 `build_mock.py`가 생성하는 형식을 따릅니다.
+
+### 검색 방식 비교
+
+동일한 평가셋에서 BM25와 TF-IDF를 비교하고, 쉬운 설명을 추가한 코퍼스의 효과를
+별도로 확인할 수 있습니다.
+
+```bash
+python -m src.evaluation.benchmark_retrievers \
+  --output data/eval/runs/retriever-comparison.json
+```
+
+`enriched` 결과는 Dev 질문을 참고해 작성한 쉬운 설명을 포함하므로 튜닝 결과입니다.
+일반화 성능은 별도로 작성한 `holdout.jsonl`에서 최종 확인해야 합니다.
