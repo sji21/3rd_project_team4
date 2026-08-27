@@ -6,6 +6,10 @@
 
 - Fixed unreadable white text on the light Streamlit background by applying an explicit high-contrast light theme. (commit: `26f8cd1`)
 
+### Changed
+
+- Organized planning documents, reference assets, and the shareable PDF under `docs/planning/`; moved the cross-platform PDF builder to `scripts/` and documented its reproducible paths and dependencies. (commit: `0185314`)
+
 ## 2026-08-26
 
 ### Added
