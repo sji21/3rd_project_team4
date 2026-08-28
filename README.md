@@ -8,13 +8,30 @@
 
 ```
 jeonse-on/
+├─ AGENTS.md           # Codex 작업 지침
+├─ README.md
 ├─ app/                # 사용자 화면 (Streamlit)
 ├─ scripts/            # 문서 생성 등 개발 보조 명령
 ├─ src/
 │  ├─ database/        # 법령 · 판례 관계형 DB와 Chroma 초기화
 │  ├─ ingestion/       # 수집 · 정제 · 청킹
 │  ├─ retrieval/       # 임베딩 · Vector DB · Retriever
-│  ├─ generation/      # Prompt · Chain · 인용 검증
+│  ├─ generation/      # AI 답변 생성 Core
+│  │  ├─ __init__.py
+│  │  ├─ models.py     # 검색 근거 · 답변 초안 공용 모델
+│  │  ├─ llm.py        # 로컬 양자화 LLM 연결
+│  │  ├─ prompt.py     # 근거 기반 QA · 쉬운 설명 프롬프트
+│  │  ├─ chain.py      # Retriever → Prompt → LLM 체인
+│  │  ├─ citation.py   # metadata 기반 출처 조합 · 검증
+│  │  ├─ abstention.py # ANSWER · ABSTAIN · REFUSE 처리
+│  │  └─ validation.py # 근거 밖 주장 · 숫자/날짜/조문 검증
+│  ├─ assistants/      # 사용자 보조 LLM 기능
+│  │  ├─ __init__.py
+│  │  └─ plain_language.py  # 어려운 법령·안내문의 쉬운 설명
+│  ├─ security/        # LLM 안전장치
+│  │  ├─ __init__.py
+│  │  ├─ prompt_injection.py
+│  │  └─ secret_filter.py
 │  ├─ document_check/  # 등기 PDF 추출 · OCR · 위험 신호 규칙
 │  ├─ contract_check/  # 임대차계약서 항목 · 특약 점검
 │  └─ evaluation/      # 평가 지표 · 실험 비교
@@ -26,7 +43,18 @@ jeonse-on/
 │  ├─ sample/          # 공개 가능 샘플 문서 (커밋)
 │  └─ manifest.jsonl   # 원문 추적 (커밋)
 ├─ tests/
+│  ├─ test_generation_llm.py
+│  ├─ test_generation_prompt.py
+│  ├─ test_generation_chain.py
+│  ├─ test_generation_citation.py
+│  ├─ test_generation_abstention.py
+│  ├─ test_generation_validation.py
+│  ├─ test_plain_language.py
+│  ├─ test_prompt_injection.py
+│  └─ test_secret_filter.py
 ├─ docs/
+│  ├─ chunk-schema.md
+│  ├─ rag-handoff.md
 │  ├─ document-card.md
 │  ├─ corpus-audit.md
 │  └─ planning/        # 기획서 원문·공유 PDF·구조 이미지
