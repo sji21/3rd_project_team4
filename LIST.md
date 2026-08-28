@@ -15,10 +15,11 @@
 | [x] | PATCH-009 | 완료 | gitcatho | `feat/patch-009-knowledge-databases` | 기능 추가 | 높음 | 법령·판례·가이드·위험 규칙 관계형 DB와 RAG 검색용 Chroma DB 기반 구축 | SQLite 관계 스키마와 무결성 제약, DB·Chroma 초기화 명령, 생성 데이터 Git 제외, 관계·초기화 테스트, README 데이터 흐름과 테이블 관계 설명, 전체 테스트 통과 | PATCH-008 | - | 2026-08-27 | 2026-08-27 | `0d7f02c` |
 | [x] | PATCH-010 | 완료 | gitcatho | `feat/patch-010-lease-contract-check` | 기능 추가 | 높음 | 주택 임대차계약서 OCR, 필수 작성 항목 누락 점검과 공식 근거 기반 특약 확인·추천 | 기존 교차 플랫폼 PDF 추출·OCR을 재사용하고 휴대폰 촬영 JPG·JPEG·PNG의 EXIF 회전 보정과 로컬 OCR을 지원하며, 계약서 항목을 확인·누락 가능·판독 불가로 구분하고 이미 포함된 특약과 상황별 권장 특약을 근거·한계와 함께 Streamlit에 표시한 뒤 회귀 테스트 통과 | PATCH-001, PATCH-003, PATCH-009 | - | 2026-08-27 | 2026-08-27 | `3192b4b` |
 | [x] | PATCH-011 | 완료 | gitcatho | `feat/patch-011-expand-document-types` | 기능 변경 | 중간 | 법령 DB와 RAG 청크의 공식 문서 유형 확장 | `documents.document_type`과 `chunks.source_type`에서 법률·시행령·시행규칙·판례·법령해석·공식 가이드를 허용하고, 새 유형 저장 성공·미지원 유형 거부 테스트와 재생성 필요성을 문서화한 뒤 전체 테스트 통과 | PATCH-009 | - | 2026-08-28 | 2026-08-28 | `8d2299e` |
+| [ ] | PATCH-012 | 진행 중 | gitcatho | `feat/patch-012-integrate-main` | 기타 | 높음 | 최신 `origin/main` 검색·평가 기능과 PATCH-001~011 누적 작업 통합 | `origin/main`을 병합하고 충돌을 기능 손실 없이 해결하며 전체 테스트·의존성 검사·Git 그래프 검증을 통과한 뒤 공유 `main`에 비강제 푸시 | PATCH-011 | - | 2026-08-28 | - | pending |
 
 ## 현재 작업 경계
 
-- 현재 완료 패치: `PATCH-011`
-- 검증 결과: 여섯 공식 문서 유형의 documents·chunks 저장 성공과 미지원 유형 거부 확인, DB 테스트 7개·전체 테스트 47개·`pip check` 통과
+- 현재 진행 패치: `PATCH-012`
+- 검증 결과: 최신 `origin/main` 통합 후 갱신 예정
 - 병행 리뷰: `PATCH-005`는 Windows 팀원 검증 결과 기록 대기
 - 이미 작성된 후속 패치 코드는 아직 커밋 대상이 아니며 각 패치 차례에 별도로 검토·검증한다.
