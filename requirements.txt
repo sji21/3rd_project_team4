@@ -3,6 +3,7 @@ langgraph
 langchain-openai
 langchain-chroma
 chromadb
+sentence-transformers
 openai
 streamlit
 pdfplumber
