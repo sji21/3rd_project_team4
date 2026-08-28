@@ -430,8 +430,15 @@ result.as_prompt_context()   # 프롬프트에 그대로 넣을 문자열
 
 **폐지·구버전 조문은 반환하지 않습니다.** `status=current`가 기본 필터에 들어 있습니다
 (`docs/chunk-schema.md`의 규정과 같습니다). 폐지된 조문을 근거로 답하면 사용자가 지금
-없는 권리를 믿게 됩니다. 옛 조문을 일부러 찾아야 하는 화면이 생기면 `Corpus(status="")`
-로 풉니다.
+없는 권리를 믿게 됩니다. 옛 조문을 일부러 찾아야 하는 화면이 생기면 아래처럼 풉니다.
+
+```python
+from dataclasses import replace
+from src.retrieval.service import LAW, RetrievalService
+
+historical = replace(LAW, status="")          # status 조건만 뺀 사본
+service = RetrievalService(chunks, dense, law=historical)
+```
 
 **빈 질문은 빈 결과를 냅니다.** BM25는 토큰이 없어 스스로 아무것도 내지 않지만 임베딩은
 공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로 돌려줍니다. 그대로 두면 엔터만 쳐도

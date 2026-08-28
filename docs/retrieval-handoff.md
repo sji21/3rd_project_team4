@@ -204,8 +204,17 @@ README 의 Hybrid 절에 나오는 Hit@5 100%는 실험용 코퍼스 기준이�
 ### 폐지 조문과 빈 질문
 
 `status=current` 가 기본 필터에 들어 있어 폐지·구버전 조문은 반환되지 않습니다. 폐지된
-조문을 근거로 답하면 사용자가 지금 없는 권리를 믿게 됩니다. 옛 조문을 일부러 찾아야
-하는 화면이 생기면 `Corpus(status="")` 로 풉니다.
+조문을 근거로 답하면 사용자가 지금 없는 권리를 믿게 됩니다.
+
+옛 조문을 일부러 찾아야 하는 화면이 생기면 이렇게 풉니다.
+
+```python
+from dataclasses import replace
+from src.retrieval.service import LAW, RetrievalService
+
+historical = replace(LAW, status="")          # status 조건만 뺀 사본
+service = RetrievalService(chunks, dense, law=historical)
+```
 
 빈 질문(`""`, 공백, 탭·개행만)은 빈 결과를 돌려줍니다. `result.is_empty()` 로 확인하고
 ABSTAIN 처리하면 됩니다. BM25 는 토큰이 없어 스스로 아무것도 내지 않지만, 임베딩은
@@ -267,8 +276,8 @@ ABSTAIN 처리하면 됩니다. BM25 는 토큰이 없어 스스로 아무것도
 ## 7. 검증 상태
 
 ```
-전체 테스트  148 passed, 2 skipped
-진입점 테스트 28 passed
+전체 테스트  155 passed, 2 skipped
+진입점 테스트 35 passed
 ```
 
 오류 2건이 함께 나오는데 `tests/test_pdf_extraction.py`의 parametrize id가 Windows
