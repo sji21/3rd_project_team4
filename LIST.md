@@ -16,10 +16,12 @@
 | [x] | PATCH-010 | 완료 | gitcatho | `feat/patch-010-lease-contract-check` | 기능 추가 | 높음 | 주택 임대차계약서 OCR, 필수 작성 항목 누락 점검과 공식 근거 기반 특약 확인·추천 | 기존 교차 플랫폼 PDF 추출·OCR을 재사용하고 휴대폰 촬영 JPG·JPEG·PNG의 EXIF 회전 보정과 로컬 OCR을 지원하며, 계약서 항목을 확인·누락 가능·판독 불가로 구분하고 이미 포함된 특약과 상황별 권장 특약을 근거·한계와 함께 Streamlit에 표시한 뒤 회귀 테스트 통과 | PATCH-001, PATCH-003, PATCH-009 | - | 2026-08-27 | 2026-08-27 | `3192b4b` |
 | [x] | PATCH-011 | 완료 | gitcatho | `feat/patch-011-expand-document-types` | 기능 변경 | 중간 | 법령 DB와 RAG 청크의 공식 문서 유형 확장 | `documents.document_type`과 `chunks.source_type`에서 법률·시행령·시행규칙·판례·법령해석·공식 가이드를 허용하고, 새 유형 저장 성공·미지원 유형 거부 테스트와 재생성 필요성을 문서화한 뒤 전체 테스트 통과 | PATCH-009 | - | 2026-08-28 | 2026-08-28 | `8d2299e` |
 | [x] | PATCH-012 | 완료 | gitcatho | `feat/patch-012-integrate-main` | 기타 | 높음 | 최신 `origin/main` 검색·평가 기능과 PATCH-001~011 누적 작업 통합 | `origin/main`을 병합하고 충돌을 기능 손실 없이 해결하며 전체 테스트·의존성 검사·Git 그래프 검증을 통과한 뒤 공유 `main`에 비강제 푸시 | PATCH-011 | - | 2026-08-28 | 2026-08-28 | `5b74cdf` |
+| [ ] | PATCH-013 | 진행 중 | sji21 | `feat/patch-013-law-sqlite-ingestion` | 기능 추가 | 높음 | 법령 원천 레코드를 관계형 DB에 적재하고 검색용 청크로 추출 | 임베딩 없이 SQLite에 법령·판본·조문·청크를 적재하고, 재실행 시 중복이 생기지 않으며, 조인 결과를 Chroma 규격의 평평한 청크 JSONL로 추출해 `validate_chunks` 검증과 검색 실험에 그대로 쓸 수 있어야 한다 | PATCH-009, PATCH-011 | - | 2026-08-28 | - | - |
 
 ## 현재 작업 경계
 
 - 현재 완료 패치: `PATCH-012`
+- 현재 진행 패치: `PATCH-013` (검색 담당, 임베딩 이전 단계까지)
 - 검증 결과: README 단일 충돌 해결, 전체 테스트 61개·`pip check`·135개 검색 청크 규격 검사 통과
 - 병행 리뷰: `PATCH-005`는 Windows 팀원 검증 결과 기록 대기
 - 이미 작성된 후속 패치 코드는 아직 커밋 대상이 아니며 각 패치 차례에 별도로 검토·검증한다.
