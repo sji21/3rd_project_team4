@@ -2,6 +2,11 @@
 
 ## 2026-08-28
 
+### Added
+
+- Added Chroma indexing and a Chroma-backed retriever, and settled on `nlpai-lab/KURE-v1` (1024 dimensions) after comparing embedding models on the same evaluation set. It scores Hit@1 80.0% and MRR 0.860 against 52.0% / 0.647 for `text-embedding-3-small`, and answers a query in 0.141s on CPU. (commit: pending)
+- Added law ingestion that loads source article records into the relational store and exports flattened chunks for retrieval, so parsing quality can be verified before an embedding model is chosen. Reloading the same records does not duplicate rows. (commit: pending)
+
 ### Changed
 
 - Expanded relational document and RAG chunk source types to support laws, decrees, ministerial rules, cases, legal interpretations, and official guides while continuing to reject unknown types. (commit: `8d2299e`)

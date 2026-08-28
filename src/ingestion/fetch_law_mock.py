@@ -148,9 +148,85 @@ def build_chunks() -> list[dict]:
     return chunks
 
 
+# "[시행 2026. 1. 2.] [법률 제21065호, 2025. 10. 1., 타법개정]"
+_HEADER_META = re.compile(
+    r"\[시행\s*(?P<ey>\d{4})\.\s*(?P<em>\d{1,2})\.\s*(?P<ed>\d{1,2})\.?\]\s*"
+    r"\[(?P<kind>\S+)\s*(?P<no>제[\d호]+),\s*"
+    r"(?P<py>\d{4})\.\s*(?P<pm>\d{1,2})\.\s*(?P<pd>\d{1,2})\.?"
+)
+_MINISTRY = re.compile(r"^([가-힣]+부)\s*\(")
+
+
+def _date(y: str, m: str, d: str) -> str:
+    return f"{y}-{int(m):02d}-{int(d):02d}"
+
+
+def parse_law_header(text: str) -> dict:
+    """법령 페이지 머리말에서 공포번호·공포일·시행일·소관부처를 뽑는다."""
+    head = "\n".join(text.split("\n")[:20])
+    meta = {"proclamation_number": "", "proclaimed_at": "",
+            "effective_from": "", "ministry": ""}
+
+    m = _HEADER_META.search(head)
+    if m:
+        meta["effective_from"] = _date(m["ey"], m["em"], m["ed"])
+        meta["proclamation_number"] = f"{m['kind']} {m['no']}"
+        meta["proclaimed_at"] = _date(m["py"], m["pm"], m["pd"])
+
+    for line in head.split("\n"):
+        found = _MINISTRY.match(line.strip())
+        if found:
+            meta["ministry"] = found.group(1)
+            break
+
+    return meta
+
+
+def build_records() -> list:
+    """적재용 원천 레코드(LawArticleRecord)를 만든다.
+
+    수집 경로가 공식 API로 바뀌어도 이 형식만 맞추면 load_laws 는 그대로 쓴다.
+    """
+    from src.ingestion.load_laws import LawArticleRecord
+
+    records = []
+    for name, seq, eff, hierarchy, _parent in LAWS:
+        path = RAW_DIR / f"{name.replace(' ', '')}-{eff}.txt"
+        if not path.exists():
+            print(f"  [건너뜀] 원문 없음: {path}")
+            continue
+
+        text = path.read_text(encoding="utf-8")
+        header = parse_law_header(text)
+        effective_from = header["effective_from"] or f"{eff[:4]}-{eff[4:6]}-{eff[6:]}"
+
+        for no, title, body in parse_articles(text):
+            records.append(LawArticleRecord(
+                law_name=name,
+                law_type=hierarchy,
+                ministry=header["ministry"] or "미상",
+                law_code=seq,                      # 국가법령정보센터 lsiSeq
+                proclamation_number=header["proclamation_number"] or f"seq-{seq}",
+                proclaimed_at=header["proclaimed_at"] or effective_from,
+                effective_from=effective_from,
+                effective_to=None,
+                status="current",
+                document_type="law" if hierarchy == "법률" else "decree",
+                article_number=no,
+                article_title=title,
+                content=body,
+                source_url=f"https://www.law.go.kr/법령/{name.replace(' ', '')}/{no}",
+                collected_at=time.strftime("%Y-%m-%d"),
+                file_path=str(path),
+            ))
+    return records
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-fetch", action="store_true", help="원문 재수집 없이 청크만 다시 만든다")
+    ap.add_argument("--records", default=None,
+                    help="적재용 원천 레코드 jsonl 경로 (지정 시 함께 생성)")
     args = ap.parse_args()
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -168,6 +244,13 @@ def main() -> None:
         for c in chunks:
             f.write(json.dumps(c, ensure_ascii=False) + "\n")
     print(f"\n총 {len(chunks)}개 청크 -> {OUT_PATH}")
+
+    if args.records:
+        from src.ingestion.load_laws import write_records
+
+        records = build_records()
+        write_records(records, Path(args.records))
+        print(f"원천 레코드 {len(records)}건 -> {args.records}")
 
 
 if __name__ == "__main__":

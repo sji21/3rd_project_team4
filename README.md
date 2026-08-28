@@ -72,7 +72,7 @@ streamlit run app/streamlit_app.py
 | --- | --- | --- | --- |
 | 원문 파일 | `data/raw/` | 공식 API·PDF·HTML 원문 보관 | 원본 |
 | SQLite | `data/database/knowledge.sqlite3` | 법령 버전, 조항, 판례, 가이드, 위험 규칙과 출처 관계 관리 | 기준 DB |
-| Chroma | `data/index/chroma/` | 청크 임베딩과 유사도 검색 | 재생성 가능한 파생 인덱스 |
+| Chroma | `data/index/chroma_kurev1_1024/` | 청크 임베딩과 유사도 검색 | 재생성 가능한 파생 인덱스 |
 | 평가셋 | `data/eval/` | Dev·Holdout 질문과 정답 근거·실험 결과 | 평가 기준 |
 
 SQLite와 Chroma 생성물은 원문에서 다시 만들 수 있고 사용자 환경마다 경로가 다를 수 있으므로 Git에 커밋하지 않는다. 저장소에는 스키마, 초기화 코드, 공개 평가셋과 `data/manifest.jsonl`만 포함한다.
@@ -87,7 +87,7 @@ python scripts/init_databases.py
 
 ```text
 data/database/knowledge.sqlite3
-data/index/chroma/
+data/index/chroma_kurev1_1024/
 └─ knowledge_chunks
 ```
 
@@ -103,11 +103,16 @@ JEONSEON_CHROMA_PATH=/absolute/path/to/chroma
 ```bash
 python scripts/init_databases.py \
   --database data/database/knowledge.sqlite3 \
-  --chroma-path data/index/chroma \
+  --chroma-path data/index/chroma_kurev1_1024 \
   --collection knowledge_chunks
 ```
 
 초기화는 멱등적이다. 같은 명령을 다시 실행해도 테이블이나 컬렉션을 중복 생성하지 않는다. 현재 초기화는 스키마와 빈 검색 컬렉션을 만들며, 공식 문서 수집·파싱·청킹·임베딩 적재는 후속 ingestion/indexing 단계에서 수행한다.
+
+Chroma 인덱스 디렉터리 이름에는 임베딩 모델과 차원을 넣는다(`chroma_kurev1_1024`).
+**컬렉션 하나에는 차원이 하나만 존재**하므로 법령과 판례가 같은 컬렉션에 들어가려면
+같은 모델이어야 하고, 모델을 바꾸면 컬렉션을 새로 만들어야 한다. 이름으로 구분해 두면
+두 모델을 나란히 두고 비교할 수 있다. SQLite 원문은 모델을 바꿔도 그대로 재사용한다.
 
 `documents.document_type`과 `chunks.source_type`은 다음 공식 자료 유형을 허용한다.
 
@@ -179,22 +184,39 @@ evaluation_questions ── evaluation_evidence
 
 ### SQLite와 Chroma의 연결
 
-`chunks.chunk_id`를 Chroma 문서 ID로 그대로 사용한다. Chroma 메타데이터에는 최소한 다음 식별자를 넣는다.
+`chunks.chunk_id`를 Chroma 문서 ID로 그대로 사용한다. **Chroma에는 JOIN이 없으므로**
+검색 필터에 쓰는 값은 SQLite 조인 결과를 적재 시점에 평평하게 펼쳐 넣는다.
 
 ```json
 {
-  "chunk_id": "law-housing-v1-article-3-3-0",
-  "document_id": "doc-law-v1",
-  "source_type": "law",
-  "article_id": "article-3-3",
-  "case_id": "",
-  "guide_id": "",
+  "article_id": "주택임대차보호법-제3조의3",
+  "title": "주택임대차보호법",
+  "doc_type": "law",
+  "article_no": "제3조의3",
+  "article_title": "임차권등기명령",
+  "source_url": "https://www.law.go.kr/법령/주택임대차보호법/제3조의3",
   "status": "current",
-  "effective_from": "2026-01-01"
+  "effective_date": "2026-01-02",
+  "expiry_date": "",
+  "doc_id": "law-주택임대차보호법-20260102",
+  "chunk_index": 0
 }
 ```
 
-Retriever는 Chroma에서 유사한 `chunk_id`를 찾고 SQLite에서 조문 번호, 법령 버전, 사건번호, 시행일과 공식 URL을 다시 조회한다. 따라서 Chroma를 삭제하거나 임베딩 모델을 바꾸더라도 SQLite와 원문으로 검색 인덱스를 재생성할 수 있다.
+**`article_id`는 두 종류가 있고 값이 다르다.** SQLite의 `law_articles.article_id`는
+판본과 항·호를 구분하는 대리키이고, 위 메타데이터의 `article_id`는 **조문 단위 논리 ID**다.
+평가셋의 정답 라벨이 후자와 문자열로 대조되므로, 대리키를 넣으면 검색은 되는데 채점이
+전부 오답이 된다. 증상이 검색 품질 저하로만 보여 원인을 찾기 어렵다.
+
+Retriever는 Chroma에서 `chunk_id`와 위 메타데이터로 후보를 좁히고, 화면에 보여줄 상세
+정보가 더 필요하면 SQLite에서 추가로 조회한다. 원문과 관계는 SQLite가 기준이므로 Chroma를
+삭제하거나 임베딩 모델을 바꾸더라도 검색 인덱스를 다시 만들 수 있다.
+
+전체 규격과 적재 시 주의사항은 `docs/chunk-schema.md`를 따른다. 적재 전 검증은 다음과 같다.
+
+```bash
+python -m src.ingestion.validate_chunks data/chunks/chunks.jsonl --eval-set data/eval/dev.jsonl
+```
 
 ### 개인정보 저장 정책
 
@@ -257,3 +279,51 @@ python -m src.evaluation.benchmark_retrievers \
 
 `enriched` 결과는 Dev 질문을 참고해 작성한 쉬운 설명을 포함하므로 튜닝 결과입니다.
 일반화 성능은 별도로 작성한 `holdout.jsonl`에서 최종 확인해야 합니다.
+
+### 법령 적재와 Chroma 인덱싱
+
+임베딩 없이 SQLite까지 먼저 넣어 파싱 품질을 확인한 뒤, 벡터 인덱스를 만듭니다.
+모델을 바꿔도 SQLite 결과는 그대로 재사용합니다.
+
+```bash
+# 1. 원천 레코드 → SQLite → 검색용 청크 JSONL
+python -m src.ingestion.load_laws \
+  --records data/parsed/law_records.jsonl \
+  --export data/chunks/chunks.jsonl
+
+# 2. 규격 검증 (필수 필드 · article_id 형식 · 평가 정답 존재 여부)
+python -m src.ingestion.validate_chunks data/chunks/chunks.jsonl \
+  --eval-set data/eval/dev.jsonl
+
+# 3. 임베딩 → Chroma 적재
+python -m src.retrieval.index --chunks data/chunks/chunks.jsonl
+```
+
+재실행하면 **입력이 현재 상태가 됩니다.** 같은 입력을 다시 넣어도 행이 중복되지 않고,
+레코드 순서가 바뀌어도 결과가 같으며, 조문을 빼고 다시 넣으면 빠진 조문과 그 청크가
+SQLite와 Chroma 양쪽에서 사라집니다.
+
+임베딩 캐시는 모델명과 **청크 본문**으로 지문을 만듭니다. 청크에 설명을 덧붙이는 식으로
+본문만 고쳐도 캐시가 무효화되므로, 바뀐 내용이 반영되지 않은 옛 벡터로 평가되는 일이
+없습니다.
+
+### 임베딩 모델 — `nlpai-lab/KURE-v1` (1024차원)
+
+같은 코퍼스·평가셋에 임베딩만 바꿔 비교한 결과입니다. (법령 135청크, 채점 25문항)
+
+| 모델 | Hit@1 | Hit@5 | MRR | 질의(초) |
+| --- | --- | --- | --- | --- |
+| **nlpai-lab/KURE-v1** | **80.0%** | **96.0%** | **0.860** | 0.141 |
+| BM25 (용어사전 적용) | 76.0% | 96.0% | 0.847 | 0.000 |
+| BAAI/bge-m3 | 76.0% | 84.0% | 0.793 | 0.131 |
+| text-embedding-3-small | 52.0% | 80.0% | 0.647 | 0.207 |
+
+Hit@1 차이가 28%p로 표준오차(3.9%p)를 크게 넘습니다. 순위가 한국어 학습량 순서와
+일치하며, KURE-v1은 bge-m3의 한국어 추가 학습본입니다. CPU에서 0.141초/질의로 API보다
+빨라 GPU가 필요 없습니다. 재현은 다음과 같습니다.
+
+```bash
+python -m src.evaluation.compare_embeddings --local KURE bge
+```
+
+> 위 수치는 연습용 코퍼스 기준입니다. 실제 법령·판례가 적재되면 다시 측정해야 합니다.
