@@ -87,6 +87,16 @@ python -m src.retrieval.index --chunks data/chunks/cases.jsonl  --path data/inde
 3번을 두 번 나눠 실행해도 앞의 것이 지워지지 않습니다. 색인의 삭제 범위가 입력의
 `doc_type` 안으로 한정되어 있습니다.
 
+> ⚠️ **1번은 `data/sample/chunks_expanded.jsonl`(저장소에 있는 평가용 코퍼스)을
+> 덮어씁니다.** 그 파일에는 손으로 넣은 가이드 문서 2건(HUG 전세보증금반환보증,
+> 국세청 미납국세열람)이 들어 있는데 `fetch_law_mock` 은 법령 133건만 쓰므로 그
+> 2건이 사라집니다. 평가 정답 2개가 이 문서를 가리키고 있어, 모르고 커밋하면
+> 측정 수치가 조용히 바뀝니다. 실행 후 `git status` 로 확인하고 되돌리세요.
+>
+> ```bash
+> git checkout -- data/sample/chunks_expanded.jsonl
+> ```
+
 ### 확인
 
 ```bash
