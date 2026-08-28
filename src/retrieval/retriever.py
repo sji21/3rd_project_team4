@@ -58,9 +58,18 @@ def matches(metadata: dict, where: dict | None) -> bool:
         {"status": "current"}                      같음
         {"doc_type": {"$in": ["law", "decree"]}}  포함
         {"title": {"$nin": ["상가건물 임대차보호법"]}}  제외
+        {"$and": [ ... ]}                          모두 만족
+
+    Chroma 는 조건이 둘 이상이면 키를 나란히 두는 것을 거부하고 $and 를 요구한다
+    (`Expected where to have exactly one operator`). 여기서도 같은 문법을 받아야
+    같은 필터를 두 검색기에 그대로 넘길 수 있다.
     """
     if not where:
         return True
+    if "$and" in where:
+        return all(matches(metadata, cond) for cond in where["$and"])
+    if "$or" in where:
+        return any(matches(metadata, cond) for cond in where["$or"])
     for field, cond in where.items():
         value = metadata.get(field)
         if isinstance(cond, dict):

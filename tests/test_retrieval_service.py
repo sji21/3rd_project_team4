@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import unittest
 
+from src.retrieval.retriever import matches
 from src.retrieval.service import (
     CASE,
+    COMMERCIAL_LAWS,
     LAW,
     Corpus,
     Evidence,
     RetrievalService,
     citation_of,
+    route_law_corpus,
     split_by_type,
 )
 
@@ -79,13 +82,11 @@ class FakeDense:
 
     def search(self, query, k, where=None):
         self.calls.append((query, k, where))
-        allowed = None
-        if where:
-            allowed = set(where["doc_type"]["$in"])
+        # 실제 Chroma 와 같은 필터 의미를 쓴다. 직접 해석하면 $and 를 놓친다.
         hits = [
             (c["chunk_id"], 1.0 - i * 0.01)
             for i, c in enumerate(self.chunks)
-            if allowed is None or c["metadata"]["doc_type"] in allowed
+            if matches(c["metadata"], where)
         ]
         return hits[:k]
 
@@ -122,8 +123,13 @@ class SeparationTests(unittest.TestCase):
         dense = FakeDense(CHUNKS)
         RetrievalService(CHUNKS, dense).search("대항력", k_law=3, k_case=3)
         filters = [call[2] for call in dense.calls]
-        self.assertIn({"doc_type": {"$in": list(LAW.doc_types)}}, filters)
         self.assertIn({"doc_type": {"$in": list(CASE.doc_types)}}, filters)
+        # 법령 쪽은 라우팅이 상가 제외를 더해 $and 로 나간다
+        law_filter = next(f for f in filters if f != filters[-1])
+        self.assertTrue(
+            any(c.get("doc_type") == {"$in": list(LAW.doc_types)}
+                for c in law_filter["$and"])
+        )
 
     def test_bm25_is_built_per_corpus_not_shared(self):
         """IDF 가 코퍼스 전체 기준이라 쪼개지 않으면 서로의 점수를 왜곡한다."""
@@ -213,3 +219,100 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoutingTests(unittest.TestCase):
+    """전세ON 은 주택 서비스다. 기본 범위가 주택이어야 한다.
+
+    코퍼스의 법령 133청크 중 57청크(43%)가 상가 법령이라, 빼지 않으면 주택
+    질문에서 상가 조문이 상위를 차지한다. 실제로 "집주인이 바뀌면" 질문에
+    상가건물 임대차보호법 제5조가 1위로 올라왔다.
+    """
+
+    HOUSING = [
+        "전세 사는 중에 집주인이 바뀌면 보증금은 어떻게 되나요?",
+        "대항력은 언제부터 생기나요?",
+        "묵시적 갱신이면 기간이 얼마가 되나요?",
+        "월세로 전환할 때 상한이 있나요?",
+    ]
+    COMMERCIAL = [
+        "상가 임대차도 계약갱신요구권이 있나요?",
+        "점포를 넘길 때 권리금은 어떻게 되나요?",
+        "환산보증금을 넘으면 어떤 차이가 있나요?",
+        "사무실 임대차도 같은 법이 적용되나요?",
+    ]
+
+    def test_housing_questions_exclude_commercial_laws(self):
+        for question in self.HOUSING:
+            with self.subTest(question=question):
+                self.assertEqual(
+                    route_law_corpus(question).exclude_titles, COMMERCIAL_LAWS
+                )
+
+    def test_commercial_questions_keep_commercial_laws(self):
+        for question in self.COMMERCIAL:
+            with self.subTest(question=question):
+                self.assertEqual(route_law_corpus(question).exclude_titles, ())
+
+    def test_commercial_signal_widens_instead_of_switching(self):
+        """상가로 바꾸는 것이 아니라 제외를 푸는 것이다.
+
+        "상가주택"처럼 둘 다 걸린 질문에서 주택 조문이 사라지면 안 된다.
+        """
+        corpus = route_law_corpus("상가주택인데 주택 부분만 전세로 살고 있어요")
+        self.assertEqual(corpus.exclude_titles, ())
+        self.assertEqual(corpus.doc_types, LAW.doc_types)
+
+    def test_routing_keeps_the_tuned_parameters(self):
+        """범위만 바꾸고 파라미터는 건드리지 않는다."""
+        tuned = Corpus("법령", LAW.doc_types, bm25_b=0.25)
+        self.assertEqual(route_law_corpus("대항력", tuned).bm25_b, 0.25)
+
+
+class WhereClauseTests(unittest.TestCase):
+    """Chroma 는 조건이 둘 이상이면 $and 를 요구한다."""
+
+    def test_single_condition_stays_flat(self):
+        self.assertEqual(CASE.where(), {"doc_type": {"$in": list(CASE.doc_types)}})
+
+    def test_two_conditions_are_wrapped_in_and(self):
+        where = route_law_corpus("대항력은 언제 생기나요?").where()
+        self.assertIn("$and", where)
+        self.assertEqual(len(where["$and"]), 2)
+
+    def test_memory_filter_understands_the_same_clause(self):
+        """같은 필터를 BM25 와 Chroma 에 그대로 넘길 수 있어야 한다."""
+        where = route_law_corpus("대항력은 언제 생기나요?").where()
+        housing = {"doc_type": "law", "title": "주택임대차보호법"}
+        commercial = {"doc_type": "law", "title": COMMERCIAL_LAWS[0]}
+        self.assertTrue(matches(housing, where))
+        self.assertFalse(matches(commercial, where))
+
+    def test_or_clause_is_supported_too(self):
+        where = {"$or": [{"doc_type": "law"}, {"doc_type": "case"}]}
+        self.assertTrue(matches({"doc_type": "case"}, where))
+        self.assertFalse(matches({"doc_type": "guide"}, where))
+
+
+class PromptBlockTests(unittest.TestCase):
+    """청크 159건 전부가 출처 헤더로 시작한다. 앞에 또 붙이면 두 번 들어간다."""
+
+    def test_header_is_not_repeated(self):
+        evidence = Evidence(1, "c1", "law", "주택임대차보호법 제3조",
+                            "[주택임대차보호법 제3조(대항력 등)]\n임차인이 인도와 주민등록을",
+                            0.5)
+        block = evidence.as_prompt_block()
+        self.assertEqual(block.count("주택임대차보호법 제3조"), 1)
+        self.assertTrue(block.startswith("[1] ["))
+
+    def test_citation_is_added_when_the_text_has_no_header(self):
+        evidence = Evidence(1, "c1", "law", "주택임대차보호법 제3조",
+                            "임차인이 인도와 주민등록을 마친 때", 0.5)
+        block = evidence.as_prompt_block()
+        self.assertIn("주택임대차보호법 제3조", block)
+        self.assertIn("임차인이 인도와", block)
+
+    def test_citation_field_survives_for_the_ui(self):
+        """본문에서 헤더를 다시 떼어내지 않아도 되도록 필드는 남긴다."""
+        result = build().search("대항력", k_law=1, k_case=0)
+        self.assertTrue(result.laws[0].citation)

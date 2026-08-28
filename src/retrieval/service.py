@@ -21,7 +21,9 @@ IDF 가 코퍼스 전체 기준이라 "대항력"의 희소성이 법령 133 조
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import re
+
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from src.retrieval.dense import (
@@ -41,6 +43,9 @@ CASE_CHUNKS = Path("data/chunks/cases.jsonl")
 LAW_TYPES = ("law", "decree", "rule")
 CASE_TYPES = ("case",)
 
+# 청크 규격의 출처 헤더. docs/chunk-schema.md 와 validate_chunks 가 쓰는 것과 같다.
+_HEADER = re.compile(r"^\[.+?\]")
+
 
 @dataclass(frozen=True)
 class Corpus:
@@ -55,14 +60,52 @@ class Corpus:
     expand_weight: float = 1.0
     bm25_weight: float = 1.0
     dense_weight: float = 1.0
+    exclude_titles: tuple[str, ...] = ()
 
     def where(self) -> dict:
-        """이 묶음만 남기는 메타데이터 필터. Chroma 와 메모리 필터가 같은 문법이다."""
-        return {"doc_type": {"$in": list(self.doc_types)}}
+        """이 묶음만 남기는 메타데이터 필터.
+
+        조건이 둘이면 $and 로 묶는다. Chroma 가 키를 나란히 두는 것을 거부하고,
+        메모리 필터도 같은 문법을 받도록 맞춰 두었다.
+        """
+        conditions: list[dict] = [{"doc_type": {"$in": list(self.doc_types)}}]
+        if self.exclude_titles:
+            conditions.append({"title": {"$nin": list(self.exclude_titles)}})
+        return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
 
 LAW = Corpus("법령", LAW_TYPES)
 CASE = Corpus("판례", CASE_TYPES)
+
+# 코퍼스에 들어 있는 상가 법령. 주택 질문에서는 빼야 한다.
+COMMERCIAL_LAWS = ("상가건물 임대차보호법", "상가건물 임대차보호법 시행령")
+
+# 상가 임대차에서만 쓰는 말들. 주택 질문에는 거의 나오지 않는다.
+# "영업" 같은 넓은 말은 넣지 않았다. 오탐이 나면 주택 질문에 상가 조문이 섞인다.
+COMMERCIAL_SIGNS = ("상가", "점포", "가게", "사무실", "권리금", "환산보증금")
+
+
+def mentions_commercial(question: str) -> bool:
+    return any(sign in question for sign in COMMERCIAL_SIGNS)
+
+
+def route_law_corpus(question: str, base: Corpus = LAW) -> Corpus:
+    """질문에 맞는 법령 범위를 고른다.
+
+    **기본은 주택이다.** 전세ON 은 주택임대차 서비스이고, 코퍼스의 법령 133청크 중
+    57청크(43%)가 상가 법령이라 그대로 두면 주택 질문에서 상가 조문이 상위를
+    차지한다. 실제로 "집주인이 바뀌면" 질문에 상가건물 임대차보호법 제5조가
+    1위로 올라왔다.
+
+    상가 신호가 있으면 빼지 않는다. **상가로 바꾸는 것이 아니라 제외를 푸는 것**이다.
+    "상가주택"처럼 둘 다 걸린 질문에서 주택 조문이 사라지면 안 된다.
+
+    한계: 낱말 표에 없는 표현은 잡지 못한다. 평가셋 27문항에 상가 질문이 하나도
+    없어 이 분기는 검색 성능으로 검증하지 못했다. 판정 자체는 테스트로 잠갔다.
+    """
+    if mentions_commercial(question):
+        return replace(base, exclude_titles=())
+    return replace(base, exclude_titles=COMMERCIAL_LAWS)
 
 
 @dataclass(frozen=True)
@@ -82,7 +125,17 @@ class Evidence:
     source_url: str = ""
 
     def as_prompt_block(self) -> str:
-        """프롬프트에 그대로 넣을 수 있는 한 덩어리."""
+        """프롬프트에 그대로 넣을 수 있는 한 덩어리.
+
+        청크는 규격상 `[법령명 제N조(제목)]` 헤더로 시작한다 — 현재 코퍼스
+        159건 전부가 그렇다. 그 앞에 citation 을 또 붙이면 같은 문장이 두 번
+        들어간다. 헤더가 있으면 본문을 그대로 쓴다.
+
+        citation 필드 자체는 남긴다. 화면에 출처만 따로 보여주거나 링크를 걸 때
+        본문에서 헤더를 다시 떼어내지 않아도 되기 때문이다.
+        """
+        if _HEADER.match(self.text):
+            return f"[{self.rank}] {self.text}"
         return f"[{self.rank}] {self.citation}\n{self.text}"
 
 
@@ -222,6 +275,7 @@ class RetrievalService:
         return cls(chunks, DenseRetriever(chunks, backend))
 
     def _search_one(self, corpus: Corpus, question: str, k: int) -> list[Evidence]:
+        # 라우팅으로 만든 사본도 이름은 같다. 검색기는 이름으로 찾는다.
         retriever = self._retrievers.get(corpus.name)
         if retriever is None or k <= 0:
             return []
@@ -239,7 +293,7 @@ class RetrievalService:
         law, case = self.corpora
         return RetrievalResult(
             question=question,
-            laws=self._search_one(law, question, k_law),
+            laws=self._search_one(route_law_corpus(question, law), question, k_law),
             cases=self._search_one(case, question, k_case),
         )
 
