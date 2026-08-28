@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Sequence
 
-from src.retrieval.dense import ChromaRetriever
+from src.retrieval.dense import ChromaRetriever, _cache_path
 from src.retrieval.index import build_index, clean_metadata, index_dir_for
 
 
@@ -68,6 +68,22 @@ class MetadataTests(unittest.TestCase):
         cleaned = clean_metadata({"a": None, "b": ["x"], "c": {"nested": 1}})
         for value in cleaned.values():
             self.assertIsInstance(value, (str, int, float, bool))
+
+
+class EmbeddingCacheTests(unittest.TestCase):
+    def test_changing_chunk_text_invalidates_cache(self):
+        """본문을 고쳐도 chunk_id 가 같으면 옛 벡터로 평가된다."""
+        before = [chunk("c1", "원래 본문")]
+        after = [chunk("c1", "쉬운 설명을 덧붙인 본문")]
+        self.assertNotEqual(_cache_path("m", before), _cache_path("m", after))
+
+    def test_same_corpus_and_model_reuses_cache(self):
+        chunks = [chunk("c1", "본문")]
+        self.assertEqual(_cache_path("m", chunks), _cache_path("m", list(chunks)))
+
+    def test_changing_model_invalidates_cache(self):
+        chunks = [chunk("c1", "본문")]
+        self.assertNotEqual(_cache_path("a", chunks), _cache_path("b", chunks))
 
 
 class IndexPathTests(unittest.TestCase):
@@ -138,6 +154,14 @@ class IndexAndSearchTests(unittest.TestCase):
     def test_search_respects_k(self):
         r = ChromaRetriever(self.backend, self.path)
         self.assertLessEqual(len(r.search("대항력", 2)), 2)
+
+    def test_shrinking_input_removes_stale_documents(self):
+        """upsert 만 하면 이번 입력에서 빠진 청크가 계속 검색된다."""
+        summary = build_index(self.CHUNKS[:1], self.backend, path=self.path)
+        self.assertEqual(summary.indexed, 1)
+        self.assertEqual(summary.removed, len(self.CHUNKS) - 1)
+        r = ChromaRetriever(self.backend, self.path)
+        self.assertNotIn("c2", [cid for cid, _ in r.search("보증금", 5)])
 
     def test_count_matches_indexed_total(self):
         r = ChromaRetriever(self.backend, self.path)

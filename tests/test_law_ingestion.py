@@ -151,6 +151,49 @@ class LoadTests(unittest.TestCase):
             second = self.counts(connection)
         self.assertEqual(first, second)
 
+    def test_reordering_records_does_not_duplicate(self):
+        """chunk_index 를 문서 단위로 세면 순서가 바뀔 때 같은 조문이 중복된다."""
+        first = [make_record(article_number=n) for n in ("제1조", "제2조", "제3조")]
+        with closing(connect_database(self.db)) as connection:
+            load_records(first, connection)
+            load_records(list(reversed(first)), connection)
+            counts = self.counts(connection)
+        self.assertEqual(counts["chunks"], 3)
+        self.assertEqual(counts["law_articles"], 3)
+
+    def test_removed_articles_disappear_on_reload(self):
+        """조문이 빠진 채 재적재하면 옛 행이 남으면 안 된다."""
+        with closing(connect_database(self.db)) as connection:
+            load_records(
+                [make_record(article_number=n) for n in ("제1조", "제2조", "제3조")],
+                connection,
+            )
+            load_records(
+                [make_record(article_number=n) for n in ("제1조", "제3조")], connection
+            )
+            rows = [
+                r[0] for r in connection.execute(
+                    "SELECT article_number FROM law_articles ORDER BY article_number"
+                )
+            ]
+        self.assertEqual(rows, ["제1조", "제3조"])
+
+    def test_chunk_index_counts_within_the_article(self):
+        """항 단위로 쪼갠 순번이지 입력 순서 번호가 아니다."""
+        with closing(connect_database(self.db)) as connection:
+            load_records(
+                [
+                    make_record(article_number="제3조", paragraph_number="1"),
+                    make_record(article_number="제4조"),
+                    make_record(article_number="제3조", paragraph_number="2"),
+                ],
+                connection,
+            )
+            rows = dict(connection.execute(
+                "SELECT chunk_id, chunk_index FROM chunks"
+            ).fetchall())
+        self.assertEqual(sorted(rows.values()), [0, 0, 1])
+
     def test_invalid_records_are_skipped_and_reported(self):
         with closing(connect_database(self.db)) as connection:
             summary = load_records(

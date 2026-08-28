@@ -169,10 +169,21 @@ def load_records(
             continue
         valid.append(record)
 
+    # 이번 입력에 들어온 판본의 조문을 통째로 지우고 다시 넣는다. upsert 만 하면
+    # 조문이 삭제되거나 항·호 구성이 바뀐 경우 옛 행이 남는다. law_articles 를
+    # 지우면 chunks 는 외래키 CASCADE 로 함께 사라진다.
+    for version_id in {law_version_id_of(r) for r in valid}:
+        connection.execute(
+            "DELETE FROM law_articles WHERE law_version_id = ?", (version_id,)
+        )
+
     seen_documents: set[str] = set()
     seen_laws: set[str] = set()
     seen_versions: set[str] = set()
-    chunk_seq: dict[str, int] = {}
+    # 같은 조문을 항·호로 나눌 때의 순번. 입력 전체가 아니라 조문 안에서만 센다.
+    # 문서 단위 러닝 카운터로 매기면 레코드 순서가 바뀔 때 같은 조문이 다른
+    # chunk_id 를 받아 중복 행이 생긴다.
+    chunk_seq: dict[tuple[str, str], int] = {}
 
     for record in valid:
         law_id = law_id_of(record)
@@ -252,8 +263,9 @@ def load_records(
         )
         summary.articles += 1
 
-        index = chunk_seq.get(document_id, 0)
-        chunk_seq[document_id] = index + 1
+        key = (document_id, record.article_number)
+        index = chunk_seq.get(key, 0)
+        chunk_seq[key] = index + 1
         body = chunk_body(record)
         connection.execute(
             """

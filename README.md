@@ -299,7 +299,13 @@ python -m src.ingestion.validate_chunks data/chunks/chunks.jsonl \
 python -m src.retrieval.index --chunks data/chunks/chunks.jsonl
 ```
 
-같은 입력을 다시 넣어도 SQLite 행과 Chroma 문서가 중복되지 않습니다.
+재실행하면 **입력이 현재 상태가 됩니다.** 같은 입력을 다시 넣어도 행이 중복되지 않고,
+레코드 순서가 바뀌어도 결과가 같으며, 조문을 빼고 다시 넣으면 빠진 조문과 그 청크가
+SQLite와 Chroma 양쪽에서 사라집니다.
+
+임베딩 캐시는 모델명과 **청크 본문**으로 지문을 만듭니다. 청크에 설명을 덧붙이는 식으로
+본문만 고쳐도 캐시가 무효화되므로, 바뀐 내용이 반영되지 않은 옛 벡터로 평가되는 일이
+없습니다.
 
 ### 임베딩 모델 — `nlpai-lab/KURE-v1` (1024차원)
 

@@ -31,6 +31,9 @@ def resolve_database_paths() -> DatabasePaths:
         ),
         chroma=_configured_path(
             "JEONSEON_CHROMA_PATH",
-            PROJECT_ROOT / "data" / "index" / "chroma",
+            # 인덱스 디렉터리 이름에는 임베딩 모델과 차원이 붙는다.
+            # 컬렉션당 차원은 하나뿐이라 모델을 바꾸면 새 컬렉션을 만들어야 한다.
+            # 명명 규칙은 src/retrieval/index.py 의 index_dir_for 와 같다.
+            PROJECT_ROOT / "data" / "index" / "chroma_kurev1_1024",
         ),
     )

@@ -16,11 +16,13 @@ docs/chunk-schema.md 를 따른다.
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from src.database.config import resolve_database_paths
 from src.retrieval.dense import EmbeddingBackend, SentenceTransformerEmbedding
 from src.retrieval.retriever import load_chunks
 
@@ -39,6 +41,7 @@ class IndexSummary:
     dimension: int
     indexed: int
     seconds: float
+    removed: int = 0
 
 
 def index_dir_for(model_id: str, dimension: int, root: Path = Path("data/index")) -> Path:
@@ -105,6 +108,15 @@ def build_index(
             metadatas=[clean_metadata(c["metadata"]) for c in window],
         )
 
+    # upsert 만으로는 이번 입력에서 빠진 청크가 컬렉션에 남는다. 조문이 삭제되거나
+    # 코퍼스를 줄여 다시 색인하면 옛 문서가 계속 검색되므로 여기서 지운다.
+    incoming = {c["chunk_id"] for c in chunks}
+    existing = set(collection.get(include=[])["ids"])
+    stale = sorted(existing - incoming)
+    if stale:
+        for i in range(0, len(stale), batch):
+            collection.delete(ids=stale[i : i + batch])
+
     return IndexSummary(
         path=target,
         collection=collection.name,
@@ -112,6 +124,7 @@ def build_index(
         dimension=dimension,
         indexed=collection.count(),
         seconds=round(time.perf_counter() - started, 2),
+        removed=len(stale),
     )
 
 
@@ -120,7 +133,8 @@ def main() -> int:
     ap.add_argument("--chunks", default="data/chunks/chunks.jsonl")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--collection", default=DEFAULT_COLLECTION)
-    ap.add_argument("--path", default=None, help="생략하면 모델·차원으로 자동 결정")
+    ap.add_argument("--path", default=None,
+                    help="생략하면 JEONSEON_CHROMA_PATH, 없으면 모델·차원으로 결정")
     args = ap.parse_args()
 
     chunks_path = Path(args.chunks)
@@ -132,11 +146,19 @@ def main() -> int:
     print(f"\n  청크 {len(chunks)}건 · 모델 {args.model}")
     print("  임베딩 계산 중 …")
 
+    # 경로 결정은 한 곳으로 모은다. 인덱서와 scripts/init_databases.py 가 서로 다른
+    # 폴더를 쓰면 빈 컬렉션과 실제 색인이 갈라진다.
+    target: Path | None = None
+    if args.path:
+        target = Path(args.path)
+    elif os.getenv("JEONSEON_CHROMA_PATH", "").strip():
+        target = resolve_database_paths().chroma
+
     backend = SentenceTransformerEmbedding(args.model)
     summary = build_index(
         chunks,
         backend,
-        path=Path(args.path) if args.path else None,
+        path=target,
         collection_name=args.collection,
     )
 

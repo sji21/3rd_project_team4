@@ -87,12 +87,21 @@ def cosine(a: Sequence[float], b: Sequence[float], a_norm: float, b_norm: float)
 
 
 def _cache_path(backend_name: str, chunks: list[dict]) -> Path:
-    """모델과 코퍼스가 같으면 재사용, 하나라도 바뀌면 다시 계산한다."""
-    fingerprint = hashlib.sha256(
-        ("|".join(c["chunk_id"] for c in chunks) + backend_name).encode("utf-8")
-    ).hexdigest()[:16]
+    """모델과 코퍼스가 같으면 재사용, 하나라도 바뀌면 다시 계산한다.
+
+    지문에 **본문까지** 넣는다. chunk_id 만 쓰면 청크에 쉬운 설명을 덧붙이는 식으로
+    본문을 고쳐도 ID 가 그대로라 옛 벡터를 재사용하게 되고, 바뀐 내용이 반영되지
+    않은 채로 평가가 돌아간다.
+    """
+    digest = hashlib.sha256()
+    digest.update(backend_name.encode("utf-8"))
+    for chunk in chunks:
+        digest.update(chunk["chunk_id"].encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(chunk["text"].encode("utf-8"))
+        digest.update(b"\x00")
     safe = backend_name.replace("/", "_")
-    return CACHE_DIR / f"{safe}-{fingerprint}.json"
+    return CACHE_DIR / f"{safe}-{digest.hexdigest()[:16]}.json"
 
 
 class DenseRetriever:
