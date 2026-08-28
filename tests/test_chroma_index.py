@@ -98,6 +98,83 @@ class IndexPathTests(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+class SyncScopeTests(unittest.TestCase):
+    """색인 한 번이 어디까지 지울 책임을 지는지.
+
+    기존 테스트는 청크가 전부 doc_type="law" 라, 종류가 섞인 컬렉션을 한 번도
+    넣어보지 않았다. 그래서 "판례만 재색인하면 법령이 전부 지워진다"를 놓쳤다.
+    여기서는 입력의 doc_type 을 바꿔가며 넣는다.
+    """
+
+    LAWS = [
+        chunk("law1", "대항력은 주택의 인도와 주민등록으로 생긴다"),
+        chunk("law2", "보증금 증액청구는 20분의 1을 초과하지 못한다"),
+    ]
+    CASES = [
+        chunk("case1", "임차권등기 후 이사해도 대항력이 유지된다", doc_type="case",
+              title="대법원 2005다33039"),
+    ]
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "chroma"
+        self.backend = FakeEmbedding()
+
+    def tearDown(self):
+        gc.collect()
+        try:
+            self._tmp.cleanup()
+        except (PermissionError, OSError):
+            pass
+
+    def index(self, chunks, **kwargs):
+        return build_index(chunks, self.backend, path=self.path, **kwargs)
+
+    def test_indexing_cases_keeps_laws(self):
+        """법령·판례를 같은 컬렉션에 각각 따로 넣는 운영을 지킨다."""
+        self.index(self.LAWS)
+        summary = self.index(self.CASES)
+        self.assertEqual(summary.indexed, len(self.LAWS) + len(self.CASES))
+        self.assertEqual(summary.removed, 0)
+
+    def test_indexing_laws_keeps_cases(self):
+        """반대 순서도 같아야 한다."""
+        self.index(self.CASES)
+        summary = self.index(self.LAWS)
+        self.assertEqual(summary.indexed, len(self.LAWS) + len(self.CASES))
+        self.assertEqual(summary.removed, 0)
+
+    def test_stale_still_removed_within_the_same_doc_type(self):
+        """범위를 좁혔다고 해서 원래 목적(빠진 조문 정리)을 잃으면 안 된다."""
+        self.index(self.LAWS + self.CASES)
+        summary = self.index(self.LAWS[:1])          # 법령 하나를 뺀 채 재색인
+        self.assertEqual(summary.removed, 1)         # law2 만 정리
+        self.assertEqual(summary.indexed, 1 + len(self.CASES))
+
+    def test_summary_reports_the_scope_it_synced(self):
+        summary = self.index(self.CASES)
+        self.assertEqual(summary.scope, ("case",))
+
+    def test_prune_all_crosses_doc_types(self):
+        """어떤 종류를 코퍼스에서 통째로 뺄 때 쓰는 명시적 탈출구."""
+        self.index(self.LAWS + self.CASES)
+        summary = self.index(self.LAWS, prune_all=True)
+        self.assertEqual(summary.removed, len(self.CASES))
+        self.assertEqual(summary.indexed, len(self.LAWS))
+
+    def test_empty_input_does_not_empty_the_collection(self):
+        """청크 경로를 잘못 준 실행 한 번이 컬렉션을 비우면 안 된다."""
+        self.index(self.LAWS)
+        summary = self.index([])
+        self.assertEqual(summary.removed, 0)
+        self.assertEqual(summary.indexed, len(self.LAWS))
+
+    def test_empty_input_does_not_empty_the_collection_with_prune_all(self):
+        self.index(self.LAWS)
+        summary = self.index([], prune_all=True)
+        self.assertEqual(summary.indexed, len(self.LAWS))
+
+
 class IndexAndSearchTests(unittest.TestCase):
     CHUNKS = [
         chunk("c1", "대항력은 주택의 인도와 주민등록으로 생긴다"),

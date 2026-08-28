@@ -4,12 +4,14 @@
 
 ### Added
 
+- Added a case loader and chunk merger: the supplied 26 Supreme Court housing cases now use the shared SQLite schema and can be combined with law chunks for the shared KURE Chroma collection. The MVP intentionally leaves `case_law_citations` empty until verified citation data is available. (commit: pending)
 - Added hybrid retrieval that fuses BM25 and KURE-v1 rankings with reciprocal rank fusion. The two methods failed on different questions, and combining them clears both: Hit@5 reaches 100% and MRR 0.880 against 0.847 and 0.860 alone. (commit: pending)
 - Added Chroma indexing and a Chroma-backed retriever, and settled on `nlpai-lab/KURE-v1` (1024 dimensions) after comparing embedding models on the same evaluation set. It scores Hit@1 80.0% and MRR 0.860 against 52.0% / 0.647 for `text-embedding-3-small`, and answers a query in 0.141s on CPU. (commit: `39cf361`)
 - Added law ingestion that loads source article records into the relational store and exports flattened chunks for retrieval, so parsing quality can be verified before an embedding model is chosen. Reloading the same records does not duplicate rows. (commit: `6261cf0`)
 
 ### Changed
 
+- Restricted Chroma stale-vector cleanup to the incoming `doc_type` scope. Reindexing cases no longer removes laws in the shared collection; `--prune-all` remains the explicit cross-type cleanup option. (commit: pending)
 - Expanded relational document and RAG chunk source types to support laws, decrees, ministerial rules, cases, legal interpretations, and official guides while continuing to reject unknown types. (commit: `8d2299e`)
 
 ## 2026-08-27
