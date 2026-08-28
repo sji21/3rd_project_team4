@@ -1,4 +1,4 @@
-"""PATCH-015 Hybrid(RRF) 검색기 테스트.
+"""PATCH-016 Hybrid(RRF) 검색기 테스트.
 
 임베딩 모델을 내려받지 않도록 가짜 검색기를 쓴다. 확인하려는 것은 검색 품질이
 아니라 순위 합치기의 정확성이다.
@@ -20,6 +20,23 @@ class FakeRetriever:
 
     def search(self, query, k, where=None, expand_weight=0.0):
         self.calls.append((query, k, where, expand_weight))
+        return self.ranked[:k]
+
+
+class ProtocolOnlyRetriever:
+    """`Retriever` 프로토콜이 요구하는 만큼만 구현한 검색기.
+
+    프로토콜은 `search(query, k, where)` 까지만 약속한다. expand_weight 는 어휘
+    기반에만 있는 선택 인자다. 위 FakeRetriever 는 그 인자를 받으므로, 그것만으로
+    테스트하면 안 받는 구현(예: TfidfRetriever)을 넣었을 때의 TypeError 를 놓친다.
+    """
+
+    def __init__(self, ranked: list[tuple[str, float]]) -> None:
+        self.ranked = ranked
+        self.calls: list[tuple[str, int, dict | None]] = []
+
+    def search(self, query, k, where=None):
+        self.calls.append((query, k, where))
         return self.ranked[:k]
 
 
@@ -83,6 +100,25 @@ class DelegationTests(unittest.TestCase):
         h.search("질문", 5, expand_weight=0.5)   # 인자는 무시된다
         self.assertEqual(lexical.calls[0][3], 1.0)
         self.assertEqual(dense.calls[0][3], 0.0)
+
+    def test_retriever_without_expand_weight_works(self):
+        """expand_weight 를 안 받는 구현도 그대로 합칠 수 있어야 한다."""
+        plain = ProtocolOnlyRetriever([("p1", 1.0)])
+        lexical = FakeRetriever([("a1", 1.0)])
+        h = HybridRetriever(
+            [Member(plain, "tfidf", expand_weight=1.0),
+             Member(lexical, "bm25", expand_weight=1.0)]
+        )
+        ranked = [cid for cid, _ in h.search("질문", 5)]
+        self.assertEqual(sorted(ranked), ["a1", "p1"])
+        self.assertEqual(plain.calls[0][0], "질문")
+
+    def test_expand_weight_still_reaches_members_that_accept_it(self):
+        """안 받는 구현을 지원하느라 받는 구현까지 건너뛰면 안 된다."""
+        lexical = FakeRetriever([("a1", 1.0)])
+        h = HybridRetriever([Member(lexical, "bm25", expand_weight=1.0)])
+        h.search("질문", 5)
+        self.assertEqual(lexical.calls[0][3], 1.0)
 
     def test_filter_passes_through_to_members(self):
         a = FakeRetriever([("a", 1.0)])

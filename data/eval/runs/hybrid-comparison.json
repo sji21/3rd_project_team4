@@ -2,23 +2,36 @@
   "chunks": "data/sample/chunks_expanded.jsonl",
   "eval_set": "data/eval/dev.jsonl",
   "n": 25,
+  "questions_with_multiple_gold": [
+    "dev-001",
+    "dev-015",
+    "dev-017",
+    "dev-021",
+    "dev-022",
+    "dev-024"
+  ],
+  "standard_error_hit5": 0.0,
+  "one_question_is": 0.04,
   "config": {
     "rrf_k": 60,
     "depth": 20,
     "weights": {
       "bm25": 1.0,
       "kure": 1.0
-    }
+    },
+    "model": "nlpai-lab/KURE-v1"
   },
   "results": {
     "BM25 (b=0.25, 사전)": {
       "hit@1": 0.76,
       "hit@3": 0.96,
       "hit@5": 0.96,
+      "recall@5": 0.96,
       "mrr": 0.8466666666666667,
       "failures": [
         "dev-008"
       ],
+      "partial": [],
       "ranks": {
         "dev-001": 1,
         "dev-002": 2,
@@ -51,9 +64,13 @@
       "hit@1": 0.8,
       "hit@3": 0.88,
       "hit@5": 0.96,
+      "recall@5": 0.94,
       "mrr": 0.86,
       "failures": [
         "dev-003"
+      ],
+      "partial": [
+        "dev-001"
       ],
       "ranks": {
         "dev-001": 4,
@@ -87,8 +104,12 @@
       "hit@1": 0.8,
       "hit@3": 0.92,
       "hit@5": 1.0,
+      "recall@5": 0.98,
       "mrr": 0.88,
       "failures": [],
+      "partial": [
+        "dev-001"
+      ],
       "ranks": {
         "dev-001": 2,
         "dev-002": 1,

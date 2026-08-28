@@ -16,12 +16,21 @@ rrf_k 는 상위 순위의 영향력을 조절한다. 작으면 1등에 크게 �
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 
 from src.retrieval.retriever import Retriever
 
 DEFAULT_RRF_K = 60
 DEFAULT_DEPTH = 20
+
+
+def _accepts_expand(retriever: Retriever) -> bool:
+    """검색기가 expand_weight 를 받는지 확인한다."""
+    try:
+        return "expand_weight" in inspect.signature(retriever.search).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -70,9 +79,7 @@ class HybridRetriever:
         self._last = {}
 
         for member in self.members:
-            hits = member.retriever.search(
-                query, depth, where, member.expand_weight
-            )
+            hits = self._ask(member, query, depth, where)
             self._last[member.name or str(id(member))] = [cid for cid, _ in hits]
             for rank, (chunk_id, _score) in enumerate(hits, start=1):
                 fused[chunk_id] = fused.get(chunk_id, 0.0) + member.weight / (
@@ -82,6 +89,20 @@ class HybridRetriever:
         # 구성원과 같은 규칙으로 동점을 깨어 재실행 결과가 흔들리지 않게 한다.
         ranked = sorted(fused.items(), key=lambda x: (-x[1], x[0]))
         return ranked[:k]
+
+    @staticmethod
+    def _ask(
+        member: Member, query: str, depth: int, where: dict | None
+    ) -> list[tuple[str, float]]:
+        """구성원에게 검색을 요청한다.
+
+        `Retriever` 프로토콜이 요구하는 것은 `search(query, k, where)` 까지다.
+        expand_weight 는 어휘 기반 검색기에만 있는 선택 인자이므로, 없는 구현
+        (예: TfidfRetriever)에 그대로 넘기면 TypeError 가 난다. 받는 쪽만 넘긴다.
+        """
+        if member.expand_weight and _accepts_expand(member.retriever):
+            return member.retriever.search(query, depth, where, member.expand_weight)
+        return member.retriever.search(query, depth, where)
 
     def last_member_hits(self) -> dict[str, list[str]]:
         """직전 검색에서 각 구성원이 낸 순위. 어느 쪽이 기여했는지 볼 때 쓴다."""
