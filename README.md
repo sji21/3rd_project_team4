@@ -272,6 +272,7 @@ python scripts/build_project_plan_pdf.py
 - `docs/contract-check.md` — 임대차계약서 작성 항목·특약 점검 기준과 한계
 - `docs/chunk-schema.md` — 수집 문서에서 SQLite·Chroma까지의 청크 스키마와 검증 규칙
 - `docs/eval-audit.md` — 검색 평가셋·실험 결과 감사와 한계
+- `docs/retrieval-handoff.md` — 검색 진입점 사용법, 실행 준비, 참고 데이터 (생성·앱 담당용)
 - `docs/planning/project-plan.md` — 프로젝트 범위, 아키텍처, 평가와 단계별 실행 기획
 - `docs/planning/jeonseon-project-plan.pdf` — 팀 공유용 프로젝트 실행 기획서
 - `docs/planning/assets/` — 파이프라인과 프로젝트 단계 참고 이미지
