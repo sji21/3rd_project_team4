@@ -8,9 +8,14 @@ docs/chunk-schema.md 를 따른다.
 임베딩은 여기서 직접 계산해 넘긴다. `embeddings=` 를 생략하면 Chroma 가 기본
 모델(영어 중심)을 붙여 한국어 성능이 떨어진다.
 
+**동기화 단위는 입력에 들어 있는 doc_type 이다.** 법령과 판례를 같은 컬렉션에
+두고 각각 따로 재색인하는 운영을 전제하기 때문이다. 컬렉션 전체를 기준으로
+빠진 문서를 지우면, 판례만 다시 넣었을 때 법령이 통째로 사라진다.
+
 실행:
-    python -m src.retrieval.index --chunks data/chunks/chunks.jsonl
-    python -m src.retrieval.index --chunks <파일> --model BAAI/bge-m3
+    python -m src.retrieval.index --chunks data/chunks/laws.jsonl
+    python -m src.retrieval.index --chunks data/chunks/cases.jsonl   # 법령은 그대로
+    python -m src.retrieval.index --chunks <파일> --prune-all        # 종류 넘어 정리
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ class IndexSummary:
     indexed: int
     seconds: float
     removed: int = 0
+    scope: tuple[str, ...] = ()   # 이번 실행이 삭제 책임을 진 doc_type 들
 
 
 def index_dir_for(model_id: str, dimension: int, root: Path = Path("data/index")) -> Path:
@@ -79,7 +85,14 @@ def build_index(
     path: Path | None = None,
     collection_name: str = DEFAULT_COLLECTION,
     batch: int = 128,
+    prune_all: bool = False,
 ) -> IndexSummary:
+    """청크를 임베딩해 컬렉션에 넣고, 같은 doc_type 안에서 빠진 문서를 지운다.
+
+    prune_all=True 는 doc_type 을 넘어 컬렉션 전체를 입력에 맞춘다. 어떤 종류를
+    코퍼스에서 통째로 뺄 때만 쓴다. 기본값이 아닌 이유는, 이 동작이 다른 담당자가
+    넣은 문서를 말없이 지울 수 있기 때문이다.
+    """
     import chromadb
 
     started = time.perf_counter()
@@ -110,8 +123,24 @@ def build_index(
 
     # upsert 만으로는 이번 입력에서 빠진 청크가 컬렉션에 남는다. 조문이 삭제되거나
     # 코퍼스를 줄여 다시 색인하면 옛 문서가 계속 검색되므로 여기서 지운다.
+    #
+    # 다만 지우는 범위는 이번 입력에 들어 있는 doc_type 으로 한정한다. 컬렉션
+    # 전체를 기준으로 잡으면 판례만 재색인했을 때 법령이 전부 stale 로 잡힌다.
+    # 이렇게 두면 통합 파일로 한 번에 넣든 종류별로 나눠 넣든 둘 다 맞게 동작한다.
     incoming = {c["chunk_id"] for c in chunks}
-    existing = set(collection.get(include=[])["ids"])
+    scope = tuple(sorted({c["metadata"].get("doc_type", "") for c in chunks}))
+
+    if not chunks:
+        # 입력이 비면 지울 범위도 없다. 여기서 전체 삭제로 넘어가면 파일 경로를
+        # 잘못 준 실행 한 번이 컬렉션을 비운다.
+        existing: set[str] = set()
+    elif prune_all:
+        existing = set(collection.get(include=[])["ids"])
+    else:
+        existing = set(
+            collection.get(where={"doc_type": {"$in": list(scope)}}, include=[])["ids"]
+        )
+
     stale = sorted(existing - incoming)
     if stale:
         for i in range(0, len(stale), batch):
@@ -125,6 +154,7 @@ def build_index(
         indexed=collection.count(),
         seconds=round(time.perf_counter() - started, 2),
         removed=len(stale),
+        scope=() if prune_all else scope,
     )
 
 
@@ -133,6 +163,9 @@ def main() -> int:
     ap.add_argument("--chunks", default="data/chunks/chunks.jsonl")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--collection", default=DEFAULT_COLLECTION)
+    ap.add_argument("--prune-all", action="store_true",
+                    help="doc_type 을 넘어 컬렉션 전체를 입력에 맞춘다 "
+                         "(다른 담당자가 넣은 문서도 지워질 수 있다)")
     ap.add_argument("--path", default=None,
                     help="생략하면 JEONSEON_CHROMA_PATH, 없으면 모델·차원으로 결정")
     args = ap.parse_args()
@@ -160,6 +193,7 @@ def main() -> int:
         backend,
         path=target,
         collection_name=args.collection,
+        prune_all=args.prune_all,
     )
 
     print()
