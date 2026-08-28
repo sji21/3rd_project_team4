@@ -59,6 +59,11 @@ def case_chunk(chunk_id: str, text: str, number: str) -> dict:
     }
 
 
+REPEALED = law_chunk(
+    "law_old", "구법 시절의 대항력 조문이다. 지금은 폐지되었다", "제3조",
+)
+REPEALED["metadata"]["status"] = "repealed"
+
 CHUNKS = [
     law_chunk("law1", "임차인이 주택의 인도와 주민등록을 마친 때에는 대항력이 생긴다", "제3조"),
     law_chunk("law2", "보증금은 후순위권리자보다 우선하여 변제받을 권리가 있다", "제3조의2"),
@@ -66,6 +71,7 @@ CHUNKS = [
               title="주택임대차보호법 시행령", doc_type="decree"),
     case_chunk("case1", "임차주택이 양도되면 양수인이 임대인의 지위를 승계한다", "2011다49523"),
     case_chunk("case2", "공동임차인 중 1명의 대항력은 임대차 전체에 미친다", "2021다238650"),
+    REPEALED,
 ]
 
 
@@ -122,21 +128,19 @@ class SeparationTests(unittest.TestCase):
         """Chroma 는 컬렉션 하나를 공유한다. 필터가 빠지면 판례가 법령 쪽에 섞인다."""
         dense = FakeDense(CHUNKS)
         RetrievalService(CHUNKS, dense).search("대항력", k_law=3, k_case=3)
-        filters = [call[2] for call in dense.calls]
-        self.assertIn({"doc_type": {"$in": list(CASE.doc_types)}}, filters)
-        # 법령 쪽은 라우팅이 상가 제외를 더해 $and 로 나간다
-        law_filter = next(f for f in filters if f != filters[-1])
-        self.assertTrue(
-            any(c.get("doc_type") == {"$in": list(LAW.doc_types)}
-                for c in law_filter["$and"])
-        )
+        law_filter, case_filter = [call[2] for call in dense.calls]
+        # 두 묶음 다 $and 로 나간다 (doc_type + status, 법령은 상가 제외까지)
+        self.assertIn({"doc_type": {"$in": list(LAW.doc_types)}}, law_filter["$and"])
+        self.assertIn({"doc_type": {"$in": list(CASE.doc_types)}}, case_filter["$and"])
 
     def test_bm25_is_built_per_corpus_not_shared(self):
         """IDF 가 코퍼스 전체 기준이라 쪼개지 않으면 서로의 점수를 왜곡한다."""
         service = build(dense=False)
         law_bm25 = service._retrievers["법령"].members[0].retriever
         case_bm25 = service._retrievers["판례"].members[0].retriever
-        self.assertEqual(len(law_bm25.chunks), 3)
+        # 색인은 doc_type 으로만 가른다. 폐지 청크도 법령 색인에는 들어 있고,
+        # 걸러내는 것은 질의 시점의 status 필터다.
+        self.assertEqual(len(law_bm25.chunks), 4)
         self.assertEqual(len(case_bm25.chunks), 2)
 
 
@@ -273,20 +277,25 @@ class WhereClauseTests(unittest.TestCase):
     """Chroma 는 조건이 둘 이상이면 $and 를 요구한다."""
 
     def test_single_condition_stays_flat(self):
-        self.assertEqual(CASE.where(), {"doc_type": {"$in": list(CASE.doc_types)}})
+        """조건이 하나면 $and 로 감싸지 않는다."""
+        plain = Corpus("법령", LAW.doc_types, status="")
+        self.assertEqual(plain.where(), {"doc_type": {"$in": list(LAW.doc_types)}})
 
-    def test_two_conditions_are_wrapped_in_and(self):
+    def test_conditions_are_wrapped_in_and(self):
         where = route_law_corpus("대항력은 언제 생기나요?").where()
         self.assertIn("$and", where)
-        self.assertEqual(len(where["$and"]), 2)
+        # doc_type + status + 상가 제외
+        self.assertEqual(len(where["$and"]), 3)
 
     def test_memory_filter_understands_the_same_clause(self):
         """같은 필터를 BM25 와 Chroma 에 그대로 넘길 수 있어야 한다."""
         where = route_law_corpus("대항력은 언제 생기나요?").where()
-        housing = {"doc_type": "law", "title": "주택임대차보호법"}
-        commercial = {"doc_type": "law", "title": COMMERCIAL_LAWS[0]}
+        housing = {"doc_type": "law", "title": "주택임대차보호법", "status": "current"}
+        commercial = {"doc_type": "law", "title": COMMERCIAL_LAWS[0], "status": "current"}
+        repealed = {**housing, "status": "repealed"}
         self.assertTrue(matches(housing, where))
         self.assertFalse(matches(commercial, where))
+        self.assertFalse(matches(repealed, where))
 
     def test_or_clause_is_supported_too(self):
         where = {"$or": [{"doc_type": "law"}, {"doc_type": "case"}]}
@@ -316,3 +325,53 @@ class PromptBlockTests(unittest.TestCase):
         """본문에서 헤더를 다시 떼어내지 않아도 되도록 필드는 남긴다."""
         result = build().search("대항력", k_law=1, k_case=0)
         self.assertTrue(result.laws[0].citation)
+
+
+class StatusFilterTests(unittest.TestCase):
+    """폐지된 조문을 근거로 답하면 사용자가 지금 없는 권리를 믿는다.
+
+    청크 규격(docs/chunk-schema.md)도 검색 기본 필터를 {"status": "current"} 로
+    정하고 있다. 픽스처에 폐지 청크를 넣어 두지 않으면 필터가 빠져도 알 수 없다.
+    """
+
+    def test_repealed_chunks_are_not_returned(self):
+        result = build().search("대항력", k_law=5, k_case=5)
+        self.assertNotIn("law_old", [e.chunk_id for e in result.laws])
+
+    def test_status_is_part_of_the_filter(self):
+        self.assertIn({"status": "current"}, LAW.where()["$and"])
+        self.assertIn({"status": "current"}, CASE.where()["$and"])
+
+    def test_routing_keeps_the_status_filter(self):
+        """상가 제외가 붙어도 status 조건이 밀려나면 안 된다."""
+        conditions = route_law_corpus("대항력은 언제 생기나요?").where()["$and"]
+        self.assertIn({"status": "current"}, conditions)
+
+    def test_status_can_be_widened_deliberately(self):
+        """옛 조문을 일부러 찾아야 하는 화면이 생기면 설정으로 푼다."""
+        historical = Corpus("법령", LAW.doc_types, status="")
+        service = RetrievalService(CHUNKS, FakeDense(CHUNKS), law=historical)
+        result = service.search("대항력", k_law=5, k_case=0)
+        self.assertIn("law_old", [e.chunk_id for e in result.laws])
+
+
+class BlankQueryTests(unittest.TestCase):
+    """BM25 는 토큰이 없어 아무것도 안 내지만 임베딩은 공백도 벡터로 바꾼다.
+
+    그대로 두면 사용자가 엔터만 쳐도 무관한 근거 10건이 LLM 에 넘어간다.
+    """
+
+    def test_blank_questions_return_nothing(self):
+        for question in ("", " ", "\t\n", "   "):
+            with self.subTest(question=repr(question)):
+                result = build().search(question)
+                self.assertTrue(result.is_empty())
+                self.assertEqual(result.as_prompt_context(), "")
+
+    def test_blank_question_does_not_reach_the_retrievers(self):
+        dense = FakeDense(CHUNKS)
+        RetrievalService(CHUNKS, dense).search("   ")
+        self.assertEqual(dense.calls, [])
+
+    def test_a_real_question_still_works(self):
+        self.assertFalse(build().search("대항력").is_empty())

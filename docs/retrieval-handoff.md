@@ -105,6 +105,19 @@ python -c "from src.retrieval.service import RetrievalService; print(RetrievalSe
 
 컬렉션이 **159건**(law 74 · decree 59 · case 26)이면 정상입니다.
 
+### 오프라인·사내망에서 실행할 때
+
+모델이 로컬에 이미 있어도 `sentence-transformers` 가 Hugging Face 허브에 갱신 확인을
+시도해 기동이 길게 지연됩니다. 다음 두 변수를 켜면 캐시만 씁니다.
+
+```bash
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+```
+
+Windows PowerShell 이면 `$env:HF_HUB_OFFLINE = "1"` 형태로 설정합니다. 모델을 한 번도
+받은 적이 없는 PC 에서는 이 상태로 실패하므로, 첫 실행만 네트워크가 열린 곳에서 하세요.
+
 ### 인덱스가 아직 없을 때
 
 `RetrievalService(chunks, dense=None)` 으로 만들면 BM25만으로 동작합니다. 품질은
@@ -134,8 +147,9 @@ python -c "from src.retrieval.service import RetrievalService; print(RetrievalSe
 | 실험·비교 | `data/sample/chunks_expanded.jsonl` | 135청크 | 2건 포함 |
 | **서비스** | `data/chunks/chunks.jsonl` + `cases.jsonl` | 159청크 | **없음** |
 
-`guides` 테이블이 0행이고 가이드를 적재하는 코드가 아직 없습니다. 그래서 서비스는
-가이드 문서를 반환할 수 없습니다.
+`guides` 테이블이 0행이고 가이드를 적재하는 코드가 아직 없습니다. **`service.py` 의
+`LAW_TYPES` 도 `law`·`decree`·`rule` 만 포함하므로, 설령 가이드를 색인해도 지금 코드는
+반환하지 않습니다.** 의도적으로 후속 패치로 미룬 제한입니다(6절 참고).
 
 평가 문항 2개가 가이드를 정답으로 갖고 있습니다.
 
@@ -186,6 +200,16 @@ README 의 Hybrid 절에 나오는 Hit@5 100%는 실험용 코퍼스 기준이�
 말하면 안 됩니다. **법령 검색 수치는 정상적으로 측정한 것이라 그대로 쓰셔도 됩니다.**
 
 판례를 원문으로 교체하면 전부 다시 재야 합니다.
+
+### 폐지 조문과 빈 질문
+
+`status=current` 가 기본 필터에 들어 있어 폐지·구버전 조문은 반환되지 않습니다. 폐지된
+조문을 근거로 답하면 사용자가 지금 없는 권리를 믿게 됩니다. 옛 조문을 일부러 찾아야
+하는 화면이 생기면 `Corpus(status="")` 로 풉니다.
+
+빈 질문(`""`, 공백, 탭·개행만)은 빈 결과를 돌려줍니다. `result.is_empty()` 로 확인하고
+ABSTAIN 처리하면 됩니다. BM25 는 토큰이 없어 스스로 아무것도 내지 않지만, 임베딩은
+공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로 돌려주기 때문입니다.
 
 ### 컨텍스트 크기
 

@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added a retrieval entry point (`RetrievalService`) that returns the top 5 statutes and top 5 court cases for one question, as `Evidence` objects carrying text and citation rather than raw chunks. The two kinds are searched separately because mixing them costs 17.4%p of statute Hit@5. (commit: pending)
+- Added routing that excludes the Commercial Building Lease Protection Act from housing questions by default; 57 of 133 statute chunks (43%) belong to it and were crowding out housing articles. Hit@1 went from 40.0% to 76.0% on the 25-question set. Commercial signals in the question lift the exclusion. (commit: pending)
+- Added `status=current` to the default search filter so repealed or superseded articles are never returned as grounds, and made blank questions return nothing — embeddings turn whitespace into a vector and would otherwise return arbitrary documents. (commit: pending)
+
 - Added a case loader and chunk merger: the supplied 26 Supreme Court housing cases now use the shared SQLite schema and can be combined with law chunks for the shared KURE Chroma collection. The MVP intentionally leaves `case_law_citations` empty until verified citation data is available. (commit: pending)
 - Added hybrid retrieval that fuses BM25 and KURE-v1 rankings with reciprocal rank fusion. The two methods failed on different questions, and combining them clears both: Hit@5 reaches 100% and MRR 0.880 against 0.847 and 0.860 alone. (commit: pending)
 - Added Chroma indexing and a Chroma-backed retriever, and settled on `nlpai-lab/KURE-v1` (1024 dimensions) after comparing embedding models on the same evaluation set. It scores Hit@1 80.0% and MRR 0.860 against 52.0% / 0.647 for `text-embedding-3-small`, and answers a query in 0.141s on CPU. (commit: `39cf361`)

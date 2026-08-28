@@ -4,9 +4,11 @@
 
     search(query, k) -> [(chunk_id, score), ...]   점수 내림차순
 
-지금은 외부 API 없이 돌아가는 BM25와 TF-IDF(둘 다 어휘 기반)가 구현되어 있다.
-임베딩 기반 Dense 검색은 팀원의 인덱싱 파이프라인이 준비되면
-같은 인터페이스로 DenseRetriever 를 추가하면 된다.
+어휘 기반으로 BM25 와 TF-IDF 가 있다. 임베딩 기반은 `src/retrieval/dense.py` 의
+DenseRetriever(메모리)와 ChromaRetriever(영속 인덱스)가 같은 인터페이스를 지키고,
+`src/retrieval/hybrid.py` 가 둘의 순위를 RRF 로 합친다.
+
+서비스에서 쓰는 진입점은 `src/retrieval/service.py` 의 RetrievalService 다.
 """
 
 from __future__ import annotations

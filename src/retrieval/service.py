@@ -61,14 +61,21 @@ class Corpus:
     bm25_weight: float = 1.0
     dense_weight: float = 1.0
     exclude_titles: tuple[str, ...] = ()
+    status: str = "current"
 
     def where(self) -> dict:
         """이 묶음만 남기는 메타데이터 필터.
 
-        조건이 둘이면 $and 로 묶는다. Chroma 가 키를 나란히 두는 것을 거부하고,
+        status 를 거르는 이유는 이것이 법률 서비스이기 때문이다. 폐지되거나 옛
+        버전인 조문을 근거로 답하면 사용자가 지금 없는 권리를 믿게 된다. 청크 규격
+        (docs/chunk-schema.md)도 검색 기본 필터를 {"status": "current"} 로 정하고 있다.
+
+        조건이 둘 이상이면 $and 로 묶는다. Chroma 가 키를 나란히 두는 것을 거부하고,
         메모리 필터도 같은 문법을 받도록 맞춰 두었다.
         """
         conditions: list[dict] = [{"doc_type": {"$in": list(self.doc_types)}}]
+        if self.status:
+            conditions.append({"status": self.status})
         if self.exclude_titles:
             conditions.append({"title": {"$nin": list(self.exclude_titles)}})
         return conditions[0] if len(conditions) == 1 else {"$and": conditions}
@@ -289,7 +296,16 @@ class RetrievalService:
         ]
 
     def search(self, question: str, k_law: int = 5, k_case: int = 5) -> RetrievalResult:
-        """법령 k_law 건, 판례 k_case 건을 각각 뽑는다."""
+        """법령 k_law 건, 판례 k_case 건을 각각 뽑는다.
+
+        질문이 비어 있으면 빈 결과를 준다. BM25 는 토큰이 없어 스스로 아무것도
+        내지 않지만, 임베딩은 공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로
+        돌려준다. 그대로 두면 사용자가 엔터만 쳐도 무관한 근거 10건이 LLM 에
+        넘어간다.
+        """
+        if not question or not question.strip():
+            return RetrievalResult(question=question)
+
         law, case = self.corpora
         return RetrievalResult(
             question=question,
