@@ -269,7 +269,8 @@ def test_readme_documents_db_relationships_and_generated_paths() -> None:
     for expected in (
         "python scripts/init_databases.py",
         "data/database/knowledge.sqlite3",
-        "data/index/chroma/",
+        # 인덱스 경로에는 임베딩 모델과 차원이 붙는다 (컬렉션당 차원은 하나뿐)
+        "data/index/chroma_kurev1_1024/",
         "case_law_citations",
         "rule_evidence",
         "chunks.chunk_id",
