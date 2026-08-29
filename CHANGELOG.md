@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-30
+
+### Added
+
+- Added a reproducible official-case ingestion path that converts Law.go.kr detail-response JSONL into standard `CaseRecord` JSONL for the shared SQLite and Chroma pipeline. It keeps one holding per case chunk, rejects incomplete records, handles duplicate case numbers deterministically, and preserves the reviewed scope exclusions. Parsing and SQLite ingestion no longer require Chroma to be installed. (commit: `7e178f7`)
+
 ## 2026-08-28
 
 ### Added
