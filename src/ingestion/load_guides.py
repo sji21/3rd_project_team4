@@ -47,6 +47,7 @@ class GuideRecord:
     content: str
     collected_at: str
     status: str = "current"
+    published_at_source: str = "collected"
 
 
 @dataclass
@@ -54,6 +55,7 @@ class GuideLoadSummary:
     documents: int = 0
     guides: int = 0
     chunks: int = 0
+    removed: int = 0
     skipped: list[str] | None = None
 
     def __post_init__(self) -> None:
@@ -113,6 +115,22 @@ def load_guide_records(
     upsert 만 하면 예전 청크가 남아 계속 검색된다.
     """
     summary = GuideLoadSummary()
+
+    # 입력에 없는 안내는 지운다. fetch_guides 가 전부 성공했을 때만 파일을 쓰므로
+    # 입력은 항상 전량이고, 그래서 "입력이 현재 상태가 된다"를 지킬 수 있다.
+    # 지우지 않으면 원천에서 뺀 안내가 DB 와 검색에 계속 남는다.
+    incoming = {record.guide_id for record in records}
+    existing = {
+        row["guide_id"] for row in connection.execute("SELECT guide_id FROM guides")
+    }
+    for stale in sorted(existing - incoming):
+        connection.execute("DELETE FROM chunks WHERE guide_id = ?", (stale,))
+        connection.execute("DELETE FROM guides WHERE guide_id = ?", (stale,))
+        connection.execute(
+            "DELETE FROM documents WHERE document_id = ?", (f"guide-document:{stale}",)
+        )
+        summary.removed += 1
+
     for index, record in enumerate(records):
         if not record.content.strip():
             summary.skipped.append(f"[{index}] {record.guide_id}: 본문이 비어 있음")
@@ -256,6 +274,12 @@ def main() -> int:
         return 1
 
     records = read_guide_records(records_path)
+    if not records:
+        # 빈 입력으로 진행하면 위의 stale 정리가 안내를 통째로 지운다.
+        # 경로를 잘못 준 실행 한 번이 코퍼스를 비우면 안 된다.
+        print(f"원천 레코드가 비어 있습니다: {records_path}")
+        return 1
+
     database = Path(args.database)
     initialize_relational_database(database)
     with closing(connect_database(database)) as connection:
@@ -263,6 +287,8 @@ def main() -> int:
 
         print(f"\n  DB: {database}")
         print(f"  원천 {len(records)}건 → 안내 {summary.guides}건 · 청크 {summary.chunks}건")
+        if summary.removed:
+            print(f"  입력에 없어 정리한 안내: {summary.removed}건")
         print("  guide_law_references: 검증된 원천이 없어 적재하지 않음")
 
         if summary.skipped:

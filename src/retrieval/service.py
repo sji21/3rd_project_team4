@@ -43,7 +43,9 @@ GUIDE_CHUNKS = Path("data/chunks/guides.jsonl")
 # 어느 doc_type 이 어느 묶음인지. 시행령·시행규칙은 법령과 함께 다뤄야 한다.
 LAW_TYPES = ("law", "decree", "rule")
 CASE_TYPES = ("case",)
-GUIDE_TYPES = ("guide", "interp")
+# 법령해석(interp)은 여기 넣지 않는다. 기관의 실무 안내와 달리 해석례는 조문의
+# 뜻을 정하는 자료라 무게가 다르다. 코퍼스에 들어오면 그때 따로 다룬다.
+GUIDE_TYPES = ("guide",)
 
 # 청크 규격의 출처 헤더. docs/chunk-schema.md 와 validate_chunks 가 쓰는 것과 같다.
 _HEADER = re.compile(r"^\[.+?\]")
@@ -82,6 +84,17 @@ class Corpus:
             conditions.append({"title": {"$nin": list(self.exclude_titles)}})
         return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
+
+# 안내 묶음 제목에 사용 지침을 함께 싣는다. 안내 코퍼스가 작아 관련 없는 질문에도
+# 상위 몇 건이 항상 딸려 나오는데, 생성 쪽 프롬프트가 "아래 근거를 바탕으로 답하라"
+# 라고만 쓰면 모델이 무관한 안내를 억지로 끼워 넣는다. 지시가 근거와 함께 가야
+# 프롬프트를 누가 쓰든 지켜진다.
+GUIDE_HEADER = (
+    "## 참고 안내 (법적 근거가 아닌 기관 안내)\n"
+    "아래 자료는 질문과 관련될 때만 사용하세요. 관련이 없으면 무시하고 언급하지 "
+    "마세요. 법령이 아니므로 \"법에 따르면\" 이라고 인용하지 말고 어느 기관의 "
+    "안내인지 밝혀 주세요.\n"
+)
 
 LAW = Corpus("법령", LAW_TYPES)
 CASE = Corpus("판례", CASE_TYPES)
@@ -184,7 +197,7 @@ class RetrievalResult:
             # 안내는 맨 뒤에 두고 법적 근거가 아님을 제목에 박는다. 조문과 같은
             # 무게로 읽으면 모델이 "법에 따르면 보증 한도는…" 같은 문장을 쓴다.
             parts.append(
-                "## 참고 안내 (법적 근거가 아닌 기관 안내)\n"
+                GUIDE_HEADER
                 + "\n\n".join(e.as_prompt_block() for e in self.guides)
             )
         return "\n\n".join(parts)

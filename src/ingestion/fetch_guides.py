@@ -28,6 +28,12 @@ import requests
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"[ \t]+")
 
+# "2023.06.30." / "2023-06-30"
+_DATE = re.compile(r"(20\d{2})[.\-/\s]+(\d{1,2})[.\-/\s]+(\d{1,2})")
+# 조회수처럼 요청할 때마다 바뀌는 값은 본문에서 뺀다. 남겨두면 checksum 이 매번
+# 달라져 멱등 적재가 깨지고, 검색에도 쓸모가 없다.
+_BOOKKEEPING = ("작성자", "관리자", "작성일자", "조회수", "등록일", "담당부서")
+
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -48,10 +54,11 @@ class GuideSource:
     guide_type: str
     topic: str
     url: str
-    start_marker: str          # 본문이 시작되는 줄에 들어 있는 말
-    end_marker: str = ""       # 이 말이 나오면 본문 끝 (없으면 max_lines 까지)
+    start_marker: str                       # 본문이 시작되는 줄에 들어 있는 말
+    end_markers: tuple[str, ...] = ()       # 이 중 하나가 나오면 본문 끝
     warmup_url: str = ""
     max_lines: int = 60
+    date_marker: str = ""                   # 이 줄 다음에 발행일이 온다
 
 
 SOURCES: tuple[GuideSource, ...] = (
@@ -64,7 +71,7 @@ SOURCES: tuple[GuideSource, ...] = (
         url="https://www.khug.or.kr/hug/web/ig/dr/igdr000001.jsp",
         # 상단 메뉴가 600줄 넘게 이어진다. 표 요약문이 본문 시작 지점이다.
         start_marker="전세보증금반환보증 상품 개요",
-        end_marker="위탁금융기관",
+        end_markers=("위탁금융기관",),
         max_lines=80,
     ),
     GuideSource(
@@ -76,7 +83,10 @@ SOURCES: tuple[GuideSource, ...] = (
         url="https://www.nts.go.kr/nts/na/ntt/selectNttInfo.do?nttSn=1325154&mi=2207",
         # "개요"만 찾으면 좌측 메뉴의 "세무조사 개요"가 먼저 걸린다.
         start_marker="열람신청(주택임차",
-        end_marker="첨부파일",
+        # 본문이 끝나면 다음글·이전글·만족도조사·기관 링크가 이어진다. 이것을 안
+        # 끊으면 청크 하나가 통째로 유튜브·SNS 링크 목록이 된다(실제로 그랬다).
+        end_markers=("다음글", "이전글", "목록", "콘텐츠 만족도"),
+        date_marker="작성일자",
         warmup_url="https://www.nts.go.kr/nts/na/ntt/selectNttList.do?mi=2207",
     ),
 )
@@ -96,6 +106,7 @@ class GuideRecord:
     content: str
     collected_at: str
     status: str = "current"
+    published_at_source: str = "collected"   # page | collected
 
     def validate(self) -> list[str]:
         problems: list[str] = []
@@ -122,26 +133,48 @@ def html_to_lines(raw: str) -> list[str]:
     return [ln for ln in (_WS.sub(" ", l).strip() for l in text.split("\n")) if ln]
 
 
-def extract_body(lines: list[str], source: GuideSource) -> str:
-    """머리말·메뉴를 걷어내고 안내 본문만 남긴다.
+def extract_body(lines: list[str], source: GuideSource) -> tuple[str, str]:
+    """머리말·메뉴를 걷어내고 안내 본문만 남긴다. (본문, 발행일) 을 돌려준다.
 
-    공공기관 페이지는 상단 메뉴가 수백 줄이라 통째로 넣으면 청크가 메뉴로 채워진다.
-    시작 표시를 찾아 그 지점부터 자른다.
+    공공기관 페이지는 상단 메뉴가 수백 줄이고, 본문 뒤에는 다음글·만족도조사·SNS
+    링크가 이어진다. 시작 표시부터 끝 표시까지만 남기지 않으면 청크 하나가 통째로
+    링크 목록이 된다(국세청에서 실제로 그랬다).
     """
     start = next((i for i, l in enumerate(lines) if source.start_marker in l), -1)
     if start < 0:
-        return ""
+        return "", ""
+
     body = lines[start : start + source.max_lines]
-    if source.end_marker:
-        # 첫 줄부터 찾으면 안 된다. 시작 줄이 목차 성격이라 끝 표시를 함께 담고
-        # 있는 경우가 있고(HUG 가 그렇다), 그러면 본문이 통째로 잘려 나간다.
-        end = next(
-            (i for i, l in enumerate(body) if i > 0 and source.end_marker in l),
-            len(body),
-        )
-        body = body[:end]
-    # 메뉴 잔재로 남는 한두 글자 줄은 버린다.
-    return "\n".join(l for l in body if len(l) > 3)
+
+    # 첫 줄부터 찾으면 안 된다. 시작 줄이 목차 성격이라 끝 표시를 함께 담고 있는
+    # 경우가 있고(HUG 가 그렇다), 그러면 본문이 통째로 잘려 나간다.
+    ends = [
+        i
+        for i, line in enumerate(body)
+        if i > 0 and any(marker in line for marker in source.end_markers)
+    ]
+    if ends:
+        body = body[: min(ends)]
+
+    published_at = ""
+    if source.date_marker:
+        for i, line in enumerate(body):
+            if source.date_marker in line:
+                # 표시와 같은 줄에 있을 수도, 다음 줄에 있을 수도 있다.
+                found = _DATE.search(line) or (
+                    _DATE.search(body[i + 1]) if i + 1 < len(body) else None
+                )
+                if found:
+                    year, month, day = found.groups()
+                    published_at = f"{year}-{int(month):02d}-{int(day):02d}"
+                break
+
+    kept = [
+        line
+        for line in body
+        if len(line) > 3 and not any(word in line for word in _BOOKKEEPING)
+    ]
+    return "\n".join(kept), published_at
 
 
 def fetch(source: GuideSource, session: requests.Session) -> str:
@@ -165,7 +198,9 @@ def collect(sources: tuple[GuideSource, ...] = SOURCES,
     problems: list[str] = []
     for source in sources:
         try:
-            body = extract_body(html_to_lines(fetch(source, session)), source)
+            body, published_at = extract_body(
+                html_to_lines(fetch(source, session)), source
+            )
         except Exception as error:                      # 네트워크·파싱 모두
             problems.append(f"{source.guide_id}: {type(error).__name__} {error}")
             continue
@@ -177,7 +212,10 @@ def collect(sources: tuple[GuideSource, ...] = SOURCES,
             guide_type=source.guide_type,
             topic=source.topic,
             source_url=source.url,
-            published_at=collected_at,   # 안내 페이지에 발행일이 없다. 수집일을 쓴다.
+            # 페이지에 게시일이 있으면 그것을 쓴다. 없으면 수집일로 갈음하되,
+            # 어느 쪽인지 published_at_source 에 남겨 나중에 구분할 수 있게 한다.
+            published_at=published_at or collected_at,
+            published_at_source="page" if published_at else "collected",
             content=body,
             collected_at=collected_at,
         )
@@ -205,8 +243,10 @@ def main() -> int:
         for problem in problems:
             print(f"    {problem}")
 
-    if not records:
-        print("\n  수집된 문서가 없어 파일을 쓰지 않았습니다.\n")
+    if problems:
+        # 일부만 성공한 결과로 덮어쓰면, 다음 적재가 빠진 문서를 지우거나 옛
+        # 문서를 남긴다. 전부 성공했을 때만 쓴다.
+        print("\n  실패가 있어 파일을 쓰지 않았습니다. 기존 파일은 그대로입니다.\n")
         return 1
 
     out = Path(args.records)
