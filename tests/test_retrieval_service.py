@@ -423,6 +423,8 @@ class GuideRoutingTests(unittest.TestCase):
         "묵시적 갱신이면 계약 기간이 얼마가 되나요?",
         "계약갱신요구권은 몇 번까지 쓸 수 있나요?",
         "2기 차임을 연체하면 어떻게 되나요?",
+        "관리비 체납액은 얼마인가요?",
+        "지방세 체납액도 열람할 수 있나요?",
     ]
 
     def test_unrelated_questions_get_no_guides(self):

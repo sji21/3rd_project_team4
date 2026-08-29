@@ -106,7 +106,7 @@ class GuideRecord:
     content: str
     collected_at: str
     status: str = "current"
-    published_at_source: str = "collected"   # page | collected
+    published_at_source: str = "unknown"   # page | unknown
 
     def validate(self) -> list[str]:
         problems: list[str] = []
@@ -212,10 +212,10 @@ def collect(sources: tuple[GuideSource, ...] = SOURCES,
             guide_type=source.guide_type,
             topic=source.topic,
             source_url=source.url,
-            # 페이지에 게시일이 있으면 그것을 쓴다. 없으면 수집일로 갈음하되,
-            # 어느 쪽인지 published_at_source 에 남겨 나중에 구분할 수 있게 한다.
-            published_at=published_at or collected_at,
-            published_at_source="page" if published_at else "collected",
+            # 게시일을 찾지 못했다고 수집일을 게시일로 쓰지 않는다. 검색 청크의
+            # effective_date 는 실제 게시일일 때만 채우고 수집일은 별도로 보존한다.
+            published_at=published_at,
+            published_at_source="page" if published_at else "unknown",
             content=body,
             collected_at=collected_at,
         )

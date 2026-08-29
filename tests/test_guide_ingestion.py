@@ -129,6 +129,7 @@ def record(guide_id: str = "guide-테스트-1", content: str = "안내 본문입
         guide_id=guide_id, title="테스트 안내", agency="국세청", guide_type="민원안내",
         topic="미납국세 열람", source_url=f"https://example.invalid/{guide_id}",
         published_at="2023-06-30", content=content, collected_at="2026-08-29",
+        published_at_source="page",
     )
 
 
@@ -188,7 +189,29 @@ class TestLoading:
             assert chunk["metadata"]["doc_type"] == "guide"
             assert chunk["metadata"]["article_id"] == "guide-테스트-1"
             assert chunk["metadata"]["effective_date"] == "2023-06-30"
+            assert chunk["metadata"]["collected_at"] == "2026-08-29"
+            assert chunk["metadata"]["published_at_source"] == "page"
             assert chunk["text"].startswith("[테스트 안내]")
+
+    def test_unknown_publication_date_is_not_replaced_with_collection_date(self, database):
+        """수집일은 게시일이나 시행일이 아니다."""
+        source = record()
+        source = GuideRecord(
+            **{
+                **source.__dict__,
+                "published_at": "2026-08-29",
+                "published_at_source": "unknown",
+            }
+        )
+        with TemporaryDirectory() as temp:
+            out = Path(temp) / "guides.jsonl"
+            with closing(connect_database(database)) as connection:
+                load_guide_records([source], connection)
+                assert export_guide_chunks(connection, out) == 1
+            metadata = json.loads(out.read_text(encoding="utf-8"))["metadata"]
+            assert metadata["effective_date"] == ""
+            assert metadata["collected_at"] == "2026-08-29"
+            assert metadata["published_at_source"] == "unknown"
 
 
 class TestCliGuards:

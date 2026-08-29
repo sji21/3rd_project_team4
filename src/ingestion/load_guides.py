@@ -47,7 +47,7 @@ class GuideRecord:
     content: str
     collected_at: str
     status: str = "current"
-    published_at_source: str = "collected"
+    published_at_source: str = "unknown"
 
 
 @dataclass
@@ -179,7 +179,8 @@ def load_guide_records(
                 content = excluded.content
             """,
             (
-                record.guide_id, document_id, record.guide_type, record.published_at,
+                record.guide_id, document_id, record.guide_type,
+                record.published_at if record.published_at_source == "page" else "",
                 record.collected_at, record.topic, record.content,
             ),
         )
@@ -212,7 +213,7 @@ def load_guide_records(
 EXPORT_SQL = """
 SELECT
     c.chunk_id, c.document_id, c.chunk_index, c.content, c.token_count, c.checksum,
-    d.title, d.source_url, d.status,
+    d.title, d.source_url, d.status, d.collected_at,
     g.guide_id, g.guide_type, g.topic, g.published_at
 FROM chunks AS c
 JOIN documents AS d ON d.document_id = c.document_id
@@ -244,6 +245,8 @@ def export_guide_chunks(connection: sqlite3.Connection, out_path: Path) -> int:
                     "status": row["status"],
                     "effective_date": row["published_at"],
                     "expiry_date": "",
+                    "collected_at": row["collected_at"],
+                    "published_at_source": "page" if row["published_at"] else "unknown",
                     "guide_id": row["guide_id"],
                     "guide_type": row["guide_type"],
                     "topic": row["topic"],
