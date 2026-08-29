@@ -1,7 +1,8 @@
 langchain
 langgraph
-langchain-openai
+langchain-openai>=1.6,<2
 langchain-chroma
+langchain-core
 chromadb
 sentence-transformers
 openai
