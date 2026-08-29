@@ -24,6 +24,7 @@
 | [x] | PATCH-019 | 완료 | yoonjihwan402 | `feat/patch-019` | 기능 추가 | 중간 | PATCH-018 표준 판례 청크 기반 임베딩 비교·평가 통합 | 공통 `cases.jsonl`·메타데이터·Chroma 색인 구조를 사용해 판례 전용 KURE 평가와 로컬·Hugging Face 임베딩 비교를 재현 가능하게 실행하고, 운영용 통합 인덱스를 변경하지 않아야 한다 | PATCH-018 | - | 2026-08-29 | 2026-08-29 | `9ef5911` |
 | [ ] | PATCH-020 | 진행 중 | sji21 | `feat/patch-020-holdout-eval` | 검증 | 높음 | 홀드아웃 평가셋 봉인·1회 측정과 공식 안내 원문 적재 | 저장소를 본 적 없는 출처가 쓴 질문으로 평가셋을 만들고, 정답은 법령 원문만 보고 붙이며, 범위 밖 판정을 점수 확인 전에 끝내고, 결과를 보고 설정을 고치지 않아야 하며, 공식 안내는 원문을 수집해 법령·판례와 별도 묶음으로 반환해야 한다 | PATCH-018 | - | 2026-08-29 | - | - |
 | [ ] | PATCH-021 | 진행 중 | BellaHez | `feat/patch-021-generation-core` | 기능 추가 | 높음 | 검색 진입점과 로컬 LLM 을 LCEL 체인으로 연결 | `RetrievalService` 가 준 근거로 프롬프트를 만들어 로컬 양자화 LLM(Qwen3-8B)에 넘기고, answered·abstained·refused 세 갈래로만 끝나야 하며, 면책 문구와 출처는 LLM 이 아니라 코드가 붙이고, Ollama 없이도 도는 테스트가 통과해야 한다 | PATCH-015, PATCH-018 | - | 2026-08-29 | - | - |
+| [ ] | PATCH-022 | 진행 중 | chzhdndb90 | `feat/patch-022-case-data-ingestion` | 기능 추가 | 높음 | 공식 판례 상세 원천을 표준 판례 레코드로 변환 | 국가법령정보센터 상세 원천 JSONL에서 207건 표준 `case_records.jsonl`을 재현하고, 사건번호 중복·수동 제외 범위를 일관되게 처리하며, SQLite·청크 적재 규격 테스트가 통과해야 한다 | PATCH-018, PATCH-019 | - | 2026-08-30 | - | - |
 
 ## 현재 작업 경계
 

@@ -1,5 +1,51 @@
 # 판례 전용 임베딩 비교 인계
 
+## 공식 판례 표준 적재 흐름
+
+법령의 `law_records.jsonl`과 같은 역할을 하는 판례 표준 입력은
+`data/parsed/case_records.jsonl`이다. 원천 상세 응답, SQLite, 청크, Chroma는 모두
+Git 제외 대상이고, 아래 코드는 커밋해 팀원이 같은 원천으로 재생성한다.
+
+```text
+공식 판례 상세 원천 JSONL
+  → data/raw/case_details.jsonl
+  → src.ingestion.parse_cases
+  → data/parsed/case_records.jsonl
+  → src.ingestion.load_cases
+  → data/database/knowledge.sqlite3 + data/chunks/cases.jsonl
+  → src.retrieval.index
+  → data/index/chroma_kurev1_1024 / knowledge_chunks
+```
+
+판례는 현재 **판결요지 하나를 한 건의 단일 청크**로 쓴다. `parse_cases`는 국가법령
+정보센터 상세 응답의 `판결요지`를 `holding`·`summary`·`full_text`로 동일하게 넣고,
+짧은 요지·공식 상세 본문 누락을 제외한다. 1차 수동 범위 검토에서 제외한 명시적 상가
+사건 3건도 기본적으로 제외한다. 같은 사건번호가 여러 공개 식별자(`precSeq`)로 나오면
+큰 식별자 하나만 남긴다. 판결 전문을 합치거나 여러 청크로 나누려면 별도 평가를 거쳐야 한다.
+
+```powershell
+# 1. 공식 원천 → 표준 판례 JSONL
+python -m src.ingestion.parse_cases `
+  --input data/raw/case_details.jsonl `
+  --output data/parsed/case_records.jsonl `
+  --collected-at 2026-08-30T00:00:00Z
+
+# 2. 표준 판례 JSONL → 공통 SQLite + 판례 청크
+python -m src.ingestion.load_cases `
+  --records data/parsed/case_records.jsonl `
+  --database data/database/knowledge.sqlite3 `
+  --export data/chunks/cases.jsonl
+
+# 3. 청크 규격 검사 후 공통 Chroma에 판례 범위만 동기화
+python -m src.ingestion.validate_chunks data/chunks/cases.jsonl
+python -m src.retrieval.index `
+  --chunks data/chunks/cases.jsonl `
+  --path data/index/chroma_kurev1_1024
+```
+
+3단계의 오래된 벡터 삭제 범위는 `doc_type=case`뿐이다. 같은 Chroma 컬렉션의 법령과
+공식 안내 벡터는 삭제하지 않는다.
+
 PATCH-019의 판례 전용 비교는 PATCH-018의 공통 SQLite·청크·Chroma 구조 위에서
 실행한다. 별도 데모 SQLite나 운영용 Chroma 컬렉션을 만들거나 수정하지 않는다.
 
