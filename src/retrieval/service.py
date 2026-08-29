@@ -38,10 +38,12 @@ DEFAULT_MODEL = "nlpai-lab/KURE-v1"
 DEFAULT_INDEX = Path("data/index/chroma_kurev1_1024")
 LAW_CHUNKS = Path("data/chunks/chunks.jsonl")
 CASE_CHUNKS = Path("data/chunks/cases.jsonl")
+GUIDE_CHUNKS = Path("data/chunks/guides.jsonl")
 
 # 어느 doc_type 이 어느 묶음인지. 시행령·시행규칙은 법령과 함께 다뤄야 한다.
 LAW_TYPES = ("law", "decree", "rule")
 CASE_TYPES = ("case",)
+GUIDE_TYPES = ("guide", "interp")
 
 # 청크 규격의 출처 헤더. docs/chunk-schema.md 와 validate_chunks 가 쓰는 것과 같다.
 _HEADER = re.compile(r"^\[.+?\]")
@@ -83,6 +85,15 @@ class Corpus:
 
 LAW = Corpus("법령", LAW_TYPES)
 CASE = Corpus("판례", CASE_TYPES)
+
+# 공식 안내를 따로 두는 이유가 있다. HUG 상품안내나 국세청 민원안내는 **법적 근거가
+# 아니라 실무 안내**다. 법령과 한 묶음으로 넘기면 모델이 "법에 따르면 보증 한도는…"
+# 같은 문장을 쓴다. 조문 5칸 중 하나를 안내가 먹는 문제도 있다.
+#
+# 그래도 넣어야 한다. "전세보증금반환보증이 뭔가요?" 는 조문으로 답할 수 없는데,
+# 안내가 없으면 검색기가 엉뚱한 조문을 내놓고 is_empty() 도 False 라 ABSTAIN 으로
+# 걸러지지 않는다. 못 찾는 것보다 나쁘다.
+GUIDE = Corpus("안내", GUIDE_TYPES)
 
 # 코퍼스에 들어 있는 상가 법령. 주택 질문에서는 빼야 한다.
 COMMERCIAL_LAWS = ("상가건물 임대차보호법", "상가건물 임대차보호법 시행령")
@@ -151,6 +162,7 @@ class RetrievalResult:
     question: str
     laws: list[Evidence] = field(default_factory=list)
     cases: list[Evidence] = field(default_factory=list)
+    guides: list[Evidence] = field(default_factory=list)
 
     def as_prompt_context(self) -> str:
         """법령과 판례를 구분해 붙인 근거 묶음.
@@ -168,10 +180,17 @@ class RetrievalResult:
             parts.append(
                 "## 관련 판례\n" + "\n\n".join(e.as_prompt_block() for e in self.cases)
             )
+        if self.guides:
+            # 안내는 맨 뒤에 두고 법적 근거가 아님을 제목에 박는다. 조문과 같은
+            # 무게로 읽으면 모델이 "법에 따르면 보증 한도는…" 같은 문장을 쓴다.
+            parts.append(
+                "## 참고 안내 (법적 근거가 아닌 기관 안내)\n"
+                + "\n\n".join(e.as_prompt_block() for e in self.guides)
+            )
         return "\n\n".join(parts)
 
     def is_empty(self) -> bool:
-        return not self.laws and not self.cases
+        return not self.laws and not self.cases and not self.guides
 
 
 def citation_of(metadata: dict) -> str:
@@ -180,6 +199,11 @@ def citation_of(metadata: dict) -> str:
     판례는 사건명만으로 무의미하다 — "추심금", "배당이의"는 여럿이다. 법원과
     사건번호가 있어야 답변에서 인용할 수 있다.
     """
+    if metadata.get("doc_type") in GUIDE_TYPES:
+        agency_title = metadata.get("title", "")
+        topic = metadata.get("topic", "")
+        return f"{agency_title}({topic})" if topic else agency_title
+
     if metadata.get("doc_type") in CASE_TYPES:
         head = " ".join(
             x for x in (metadata.get("court_name", ""), metadata.get("case_number", "")) if x
@@ -224,6 +248,7 @@ class RetrievalService:
         dense: Retriever | None = None,
         law: Corpus = LAW,
         case: Corpus = CASE,
+        guide: Corpus = GUIDE,
     ) -> None:
         """chunks 는 법령·판례가 섞여 있어도 된다. doc_type 으로 갈라 쓴다.
 
@@ -231,7 +256,7 @@ class RetrievalService:
         인덱스가 아직 없는 환경에서 앱을 띄울 수 있다.
         """
         self.dense = dense
-        self.corpora = (law, case)
+        self.corpora = (law, case, guide)
         self._chunks = {c["chunk_id"]: c for c in chunks}
         self._retrievers = {
             corpus.name: self._build(corpus, split_by_type(chunks, corpus.doc_types))
@@ -259,7 +284,7 @@ class RetrievalService:
     @classmethod
     def from_index(
         cls,
-        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS),
+        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS, GUIDE_CHUNKS),
         index_path: Path | str = DEFAULT_INDEX,
         model: str = DEFAULT_MODEL,
     ) -> "RetrievalService":
@@ -273,7 +298,7 @@ class RetrievalService:
     @classmethod
     def from_files(
         cls,
-        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS),
+        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS, GUIDE_CHUNKS),
         backend: EmbeddingBackend | None = None,
     ) -> "RetrievalService":
         """Chroma 없이 메모리에서 임베딩한다. 평가·실험용."""
@@ -295,8 +320,17 @@ class RetrievalService:
             if chunk_id in self._chunks
         ]
 
-    def search(self, question: str, k_law: int = 5, k_case: int = 5) -> RetrievalResult:
-        """법령 k_law 건, 판례 k_case 건을 각각 뽑는다.
+    def search(
+        self,
+        question: str,
+        k_law: int = 5,
+        k_case: int = 5,
+        k_guide: int = 2,
+    ) -> RetrievalResult:
+        """법령 k_law 건, 판례 k_case 건, 공식 안내 k_guide 건을 각각 뽑는다.
+
+        안내를 2건만 두는 것은 코퍼스에 7청크뿐이어서가 아니라, 안내가 법적 근거가
+        아니기 때문이다. 조문·판례가 답의 중심이고 안내는 실무 절차를 보태는 자리다.
 
         질문이 비어 있으면 빈 결과를 준다. BM25 는 토큰이 없어 스스로 아무것도
         내지 않지만, 임베딩은 공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로
@@ -306,11 +340,12 @@ class RetrievalService:
         if not question or not question.strip():
             return RetrievalResult(question=question)
 
-        law, case = self.corpora
+        law, case, guide = self.corpora
         return RetrievalResult(
             question=question,
             laws=self._search_one(route_law_corpus(question, law), question, k_law),
             cases=self._search_one(case, question, k_case),
+            guides=self._search_one(guide, question, k_guide),
         )
 
 

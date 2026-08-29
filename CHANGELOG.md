@@ -4,6 +4,8 @@
 
 ### Added
 
+- Sealed a holdout evaluation set and measured it once, and ingested the official HUG and NTS guides from their source pages. Guides are returned as a separate group (`result.guides`) and labelled as non-statutory in the prompt. Without them, "what is jeonse deposit return insurance?" returned unrelated statutes while `is_empty()` stayed False, so abstention never triggered. (commit: pending)
+
 - Added a retrieval entry point (`RetrievalService`) that returns the top 5 statutes and top 5 court cases for one question, as `Evidence` objects carrying text and citation rather than raw chunks. The two kinds are searched separately because mixing them costs 17.4%p of statute Hit@5. (commit: pending)
 - Added routing that excludes the Commercial Building Lease Protection Act from housing questions by default; 57 of 133 statute chunks (43%) belong to it and were crowding out housing articles. Hit@1 went from 40.0% to 76.0% on the 25-question set. Commercial signals in the question lift the exclusion. (commit: pending)
 - Added `status=current` to the default search filter so repealed or superseded articles are never returned as grounds, and made blank questions return nothing — embeddings turn whitespace into a vector and would otherwise return arbitrary documents. (commit: pending)

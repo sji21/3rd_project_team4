@@ -13,6 +13,7 @@ from src.retrieval.retriever import matches
 from src.retrieval.service import (
     CASE,
     COMMERCIAL_LAWS,
+    GUIDE,
     LAW,
     Corpus,
     Evidence,
@@ -59,6 +60,22 @@ def case_chunk(chunk_id: str, text: str, number: str) -> dict:
     }
 
 
+def guide_chunk(chunk_id: str, text: str, title: str, topic: str) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "doc_id": f"guide-document:{chunk_id}",
+        "text": text,
+        "metadata": {
+            "title": title,
+            "doc_type": "guide",
+            "article_id": chunk_id.split("#")[0],
+            "topic": topic,
+            "source_url": "https://www.khug.or.kr/z",
+            "status": "current",
+        },
+    }
+
+
 REPEALED = law_chunk(
     "law_old", "구법 시절의 대항력 조문이다. 지금은 폐지되었다", "제3조",
 )
@@ -71,6 +88,8 @@ CHUNKS = [
               title="주택임대차보호법 시행령", doc_type="decree"),
     case_chunk("case1", "임차주택이 양도되면 양수인이 임대인의 지위를 승계한다", "2011다49523"),
     case_chunk("case2", "공동임차인 중 1명의 대항력은 임대차 전체에 미친다", "2021다238650"),
+    guide_chunk("guide-HUG#0", "전세보증금반환보증은 임대인이 보증금을 돌려주지 않을 때",
+                "HUG 전세보증금반환보증 상품안내", "전세보증금 반환보증"),
     REPEALED,
 ]
 
@@ -128,10 +147,12 @@ class SeparationTests(unittest.TestCase):
         """Chroma 는 컬렉션 하나를 공유한다. 필터가 빠지면 판례가 법령 쪽에 섞인다."""
         dense = FakeDense(CHUNKS)
         RetrievalService(CHUNKS, dense).search("대항력", k_law=3, k_case=3)
-        law_filter, case_filter = [call[2] for call in dense.calls]
-        # 두 묶음 다 $and 로 나간다 (doc_type + status, 법령은 상가 제외까지)
-        self.assertIn({"doc_type": {"$in": list(LAW.doc_types)}}, law_filter["$and"])
-        self.assertIn({"doc_type": {"$in": list(CASE.doc_types)}}, case_filter["$and"])
+        filters = [call[2] for call in dense.calls]
+        # 세 묶음 다 $and 로 나간다 (doc_type + status, 법령은 상가 제외까지)
+        self.assertEqual(len(filters), 3)
+        wanted = [LAW.doc_types, CASE.doc_types, GUIDE.doc_types]
+        for where, doc_types in zip(filters, wanted):
+            self.assertIn({"doc_type": {"$in": list(doc_types)}}, where["$and"])
 
     def test_bm25_is_built_per_corpus_not_shared(self):
         """IDF 가 코퍼스 전체 기준이라 쪼개지 않으면 서로의 점수를 왜곡한다."""
@@ -375,3 +396,47 @@ class BlankQueryTests(unittest.TestCase):
 
     def test_a_real_question_still_works(self):
         self.assertFalse(build().search("대항력").is_empty())
+
+
+class GuideCorpusTests(unittest.TestCase):
+    """공식 안내는 법적 근거가 아니라 실무 안내다. 따로 다뤄야 한다.
+
+    법령과 한 묶음으로 넘기면 모델이 "법에 따르면 보증 한도는…" 같은 문장을 쓴다.
+    그렇다고 빼면 "전세보증금반환보증이 뭔가요?" 에 엉뚱한 조문이 나가고
+    is_empty() 도 False 라 ABSTAIN 으로 걸러지지 않는다.
+    """
+
+    def test_guides_come_back_in_their_own_list(self):
+        result = build().search("전세보증금반환보증", k_law=2, k_case=0, k_guide=2)
+        self.assertTrue(result.guides)
+        self.assertTrue(all(e.doc_type in GUIDE.doc_types for e in result.guides))
+        self.assertTrue(all(e.doc_type not in GUIDE.doc_types for e in result.laws))
+
+    def test_prompt_marks_guides_as_not_legal_grounds(self):
+        context = build().search("전세보증금반환보증", k_law=1, k_case=0, k_guide=1).as_prompt_context()
+        self.assertIn("## 참고 안내", context)
+        self.assertIn("법적 근거가 아닌", context)
+
+    def test_guides_come_after_laws_and_cases_in_the_prompt(self):
+        context = build().search("보증금", k_law=1, k_case=1, k_guide=1).as_prompt_context()
+        self.assertLess(context.index("## 관련 법령"), context.index("## 참고 안내"))
+        self.assertLess(context.index("## 관련 판례"), context.index("## 참고 안내"))
+
+    def test_guide_citation_carries_agency_and_topic(self):
+        result = build().search("전세보증금반환보증", k_law=0, k_case=0, k_guide=1)
+        self.assertIn("HUG", result.guides[0].citation)
+        self.assertIn("전세보증금 반환보증", result.guides[0].citation)
+
+    def test_zero_k_guide_skips_them(self):
+        result = build().search("전세보증금반환보증", k_law=2, k_case=0, k_guide=0)
+        self.assertEqual(result.guides, [])
+        self.assertNotIn("## 참고 안내", result.as_prompt_context())
+
+    def test_guides_do_not_leak_into_the_law_corpus(self):
+        """안내가 법령 5칸 중 하나를 먹으면 근거가 밀린다."""
+        result = build().search("보증금", k_law=5, k_case=0, k_guide=0)
+        self.assertTrue(all(e.doc_type in LAW.doc_types for e in result.laws))
+
+    def test_a_result_with_only_guides_is_not_empty(self):
+        result = build().search("전세보증금반환보증", k_law=0, k_case=0, k_guide=1)
+        self.assertFalse(result.is_empty())
