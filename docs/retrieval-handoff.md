@@ -80,13 +80,23 @@ python -m src.ingestion.load_laws --records data/parsed/law_records.jsonl --expo
 # 2. 판례 26건 적재
 python scripts/load_case_only_demo_corpus.py
 
-# 3. Chroma 색인 (법령 -> 판례 순서)
+# 3. 공식 안내 원문 수집·적재 (HUG·국세청, 네트워크 필요)
+python -m src.ingestion.fetch_guides --records data/parsed/guide_records.jsonl
+python -m src.ingestion.load_guides --records data/parsed/guide_records.jsonl --export data/chunks/guides.jsonl
+
+# 4. Chroma 색인 (법령 -> 판례 -> 안내)
 python -m src.retrieval.index --chunks data/chunks/chunks.jsonl --path data/index/chroma_kurev1_1024
 python -m src.retrieval.index --chunks data/chunks/cases.jsonl  --path data/index/chroma_kurev1_1024
+python -m src.retrieval.index --chunks data/chunks/guides.jsonl --path data/index/chroma_kurev1_1024
 ```
 
-3번을 두 번 나눠 실행해도 앞의 것이 지워지지 않습니다. 색인의 삭제 범위가 입력의
+4번을 나눠 실행해도 앞의 것이 지워지지 않습니다. 색인의 삭제 범위가 입력의
 `doc_type` 안으로 한정되어 있습니다.
+
+3번은 공공기관 페이지를 긁습니다. 페이지 구조가 바뀌면 본문을 못 잡는데, 그때는
+조용히 빈 문서가 들어가지 않도록 `fetch_guides` 가 실패를 출력하고 종료코드 1 을
+냅니다. 실패가 뜨면 `src/ingestion/fetch_guides.py` 의 `start_marker` 를 맞춰야
+합니다.
 
 > ⚠️ **1번은 `data/sample/chunks_expanded.jsonl`(저장소에 있는 평가용 코퍼스)을
 > 덮어씁니다.** 그 파일에는 손으로 넣은 가이드 문서 2건(HUG 전세보증금반환보증,
@@ -104,7 +114,7 @@ python -m src.retrieval.index --chunks data/chunks/cases.jsonl  --path data/inde
 python -c "from src.retrieval.service import RetrievalService; print(RetrievalService.from_index().search('대항력은 언제 생기나요?').as_prompt_context()[:300])"
 ```
 
-컬렉션이 **159건**(law 74 · decree 59 · case 26)이면 정상입니다.
+컬렉션이 **166건**(law 74 · decree 59 · case 26 · guide 7)이면 정상입니다.
 
 ### 오프라인·사내망에서 실행할 때
 
@@ -156,6 +166,47 @@ HUG·국세청 안내를 `result.guides` 로 따로 돌려줍니다. **법적 �
 | 판례 | 26청크 |
 | 공식 안내 | 7청크 |
 | **Chroma 합계** | **166청크** |
+
+법령 5칸을 안내가 먹지 않습니다. 기본 검색은 **법령 5 + 판례 5 + 안내 2 = 12건**이고,
+법령 목록에는 `law`·`decree`만 들어갑니다.
+
+#### ⚠️ 안내는 관련이 없어도 2건이 따라옵니다 — 프롬프트에 지시가 필요합니다
+
+안내 코퍼스가 7청크(문서 2건)뿐이라 **어떤 질문에도 그중 2건이 반환됩니다.**
+"묵시적 갱신 기간이 얼마인가요?"를 물어도 HUG 보증보험 안내가 붙습니다.
+
+검색 쪽에서 걸러내지 못하는 이유가 있습니다. RRF 점수는 순위만 보므로 관련 여부와
+무관하게 거의 같은 값이 나옵니다.
+
+| 질문 | RRF 점수 | 임베딩 코사인 |
+| --- | --- | --- |
+| 전세보증금반환보증은 어떤 제도인가요? (관련 O) | 0.0328 | 0.7179 |
+| 집주인이 세금 안 낸 게 있는지…? (관련 O) | 0.0328 | 0.5895 |
+| 계약갱신요구권은 몇 번까지…? (관련 X) | 0.0328 | 0.5445 |
+| 묵시적 갱신이면 기간이…? (관련 X) | 0.0323 | 0.4868 |
+| 2기 차임을 연체하면…? (관련 X) | 0.0323 | 0.3812 |
+
+코사인에는 신호가 있지만 관련 O의 최저(0.5895)와 관련 X의 최고(0.5445)가 0.045밖에
+차이 나지 않습니다. **표본 5개·문서 2건으로 문턱을 정하면 그 5개에 맞추는 것**이라
+넣지 않았습니다. 안내 문서가 늘면 그때 다시 봅니다.
+
+**그래서 지금은 관련 여부를 LLM이 판단해야 합니다.** 프롬프트에 이런 지시를 넣어
+주세요.
+
+```text
+"## 참고 안내"는 질문과 관련될 때만 사용하세요. 관련이 없으면 무시하고 언급하지
+마세요. 이 자료는 법적 근거가 아니므로 "법에 따르면"이라고 인용하지 말고, 어느
+기관의 안내인지 밝혀 주세요.
+```
+
+이 지시가 없으면 "아래 근거를 바탕으로 답하라" 같은 프롬프트에서 모델이 무관한
+안내를 억지로 끼워 넣습니다.
+
+안내가 필요 없는 화면이라면 아예 끌 수 있습니다.
+
+```python
+service.search(질문, k_guide=0)
+```
 
 ---
 
