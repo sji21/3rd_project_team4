@@ -274,8 +274,6 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("Ollama", message)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class MarkedSentenceSurvivalTests(unittest.TestCase):
@@ -371,3 +369,6 @@ class EnvNumberTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"JEONSEON_TEST_NUM": "300"}):
             self.assertEqual(300, llm_module._env_number("JEONSEON_TEST_NUM", "1200", int))
+
+if __name__ == "__main__":
+    unittest.main()

@@ -170,8 +170,6 @@ class FormatContextTests(unittest.TestCase):
         self.assertEqual(1, context.count("주택임대차보호법 제3조(대항력 등)"))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ThinkSwitchLiveReadTests(unittest.TestCase):
@@ -196,3 +194,59 @@ class ThinkSwitchLiveReadTests(unittest.TestCase):
             self.assertNotIn("think", llm_module._extra_body())
         finally:
             llm_module.THINK_OFF = original
+
+
+class GuideContextTests(unittest.TestCase):
+    """세 번째 묶음(기관 안내)이 프롬프트까지 실려 가는가.
+
+    검색이 안내를 별도 묶음으로 주기 시작했다. format_context 가 그것을 떨어뜨리면
+    모델은 안내를 못 보는데 Answer 에는 출처로 남아, 화면과 답변이 어긋난다.
+    """
+
+    def _result(self):
+        guide = Evidence(
+            rank=1,
+            chunk_id="guide1",
+            doc_type="guide",
+            citation="주택도시보증공사(전세보증금반환보증)",
+            text="[주택도시보증공사(전세보증금반환보증)] 보증기관이 보증금을 대신 지급합니다.",
+            score=1.0,
+            source_url="https://example.kr/guide",
+        )
+        return RetrievalResult(question="전세보증금반환보증은 어떤 제도인가요?", guides=[guide])
+
+    def test_guide_section_reaches_the_prompt(self) -> None:
+        context = prompt_module.format_context(self._result())
+
+        self.assertIn("보증기관이 보증금을 대신 지급합니다", context)
+        # 법적 근거가 아니라는 표시가 함께 가야 한다(검색 쪽 GUIDE_HEADER).
+        self.assertIn("법적 근거가 아닌", context)
+
+    def test_guide_only_result_is_not_treated_as_empty(self) -> None:
+        self.assertNotEqual("검색된 자료가 없습니다.", prompt_module.format_context(self._result()))
+
+
+class GuideCitationRuleTests(unittest.TestCase):
+    """안내를 인용할 형식이 프롬프트에 정의돼 있는가.
+
+    6번 규칙에 안내가 없으면 모델이 기관명을 못 적고, 형식 규칙이 "법령명과 조문
+    번호만" 이라고 못 박으면 검색 쪽 GUIDE_HEADER 의 "어느 기관인지 밝혀 주세요"
+    와 정면으로 충돌한다. 실제로 그 상태였다.
+    """
+
+    def test_guide_has_a_citation_format(self) -> None:
+        # ★ "기관 안내" 만 찾으면 8번 규칙에도 그 말이 있어 6번을 지워도 통과한다.
+        #   인용 형식 줄 자체를 대조한다.
+        self.assertIn(
+            "- 기관 안내: `주택도시보증공사 안내` 처럼 자료를 낸 기관 이름",
+            prompt_module.SYSTEM_QA,
+        )
+
+    def test_format_section_does_not_contradict_rule_six(self) -> None:
+        self.assertNotIn("법령명과\n  조문 번호만 적으면 됩니다", prompt_module.SYSTEM_QA)
+
+    def test_guide_is_not_to_be_quoted_as_law(self) -> None:
+        self.assertIn("법에 따르면", prompt_module.SYSTEM_QA)
+
+if __name__ == "__main__":
+    unittest.main()

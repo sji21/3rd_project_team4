@@ -38,11 +38,19 @@ class Answer:
     raw_text: str = ""
     laws: tuple[Evidence, ...] = ()
     cases: tuple[Evidence, ...] = ()
+    # 공식 안내(HUG·국세청 등). 법적 근거가 아니라 실무 절차 자료이고,
+    # 검색이 질문 주제일 때만 0~2건 준다.
+    guides: tuple[Evidence, ...] = ()
 
     @property
     def evidences(self) -> tuple[Evidence, ...]:
-        """법령이 먼저, 판례가 뒤. 화면 표시 순서와 같다."""
-        return self.laws + self.cases
+        """법령 · 판례 · 안내 순. 화면 표시 순서와 같다.
+
+        ★ 안내를 빠뜨리면 안 된다. 검색이 안내를 프롬프트에 실어 보내므로 모델이
+          그것을 인용하는데, 여기에 없으면 인용 검증(citation.py)이 근거에 없는
+          출처로 보고 환각으로 잡는다.
+        """
+        return self.laws + self.cases + self.guides
 
     def sources(self) -> list[dict]:
         """화면·JSON 출력용 출처 목록.

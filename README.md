@@ -2,32 +2,29 @@
 
 주택임대차 법령 근거 기반 전세계약 점검 RAG 질의응답 시스템 (SKN33 3차 단위 프로젝트)
 
-현재 초기 기능은 등기사항증명서 PDF를 첨부하면 근저당·압류·신탁·임차권 등 계약 전에 확인할 문구와 추가 확인사항을 보여준다. 이 기능은 계약 안전성을 판정하지 않으며, 후속 단계에서 LangChain 기반 공식 근거 검색과 LangGraph·LLM 챗봇을 연결한다.
+현재 화면 기능은 등기사항증명서 PDF를 첨부하면 근저당·압류·신탁·임차권 등 계약 전에 확인할 문구와 추가 확인사항을 보여준다. 이 기능은 계약 안전성을 판정하지 않는다. 공식 근거 검색은 PATCH-018의 `RetrievalService`로 구현되어 있으며, 이를 Streamlit 화면과 LLM 답변 생성에 연결하는 일은 후속 단계다.
 
 ## 구조
 
 ```
 jeonse-on/
-├─ AGENTS.md           # Codex 작업 지침
 ├─ README.md
 ├─ app/                # 사용자 화면 (Streamlit)
-├─ scripts/            # 문서 생성 등 개발 보조 명령
+├─ scripts/            # 데이터 적재·평가·문서 생성 등 개발 보조 명령
 ├─ src/
 │  ├─ database/        # 법령 · 판례 관계형 DB와 Chroma 초기화
 │  ├─ ingestion/       # 수집 · 정제 · 청킹
-│  ├─ retrieval/       # 임베딩 · Vector DB · Retriever
-│  ├─ generation/      # AI 답변 생성 Core
+│  ├─ retrieval/       # 임베딩 · Chroma · Retriever · 검색 진입점
+│  ├─ generation/      # AI 답변 생성 연동 경계 (현재 골격)
 │  │  ├─ __init__.py
-│  │  ├─ models.py     # 검색 근거 · 답변 초안 공용 모델
-│  │  ├─ llm.py        # 로컬 양자화 LLM 연결
-│  │  ├─ prompt.py     # 근거 기반 QA · 쉬운 설명 프롬프트
-│  │  ├─ chain.py      # Retriever → Prompt → LLM 체인
-│  │  ├─ citation.py   # metadata 기반 출처 조합 · 검증
-│  │  ├─ abstention.py # ANSWER · ABSTAIN · REFUSE 처리
-│  │  └─ validation.py # 근거 밖 주장 · 숫자/날짜/조문 검증
-│  ├─ assistants/      # 사용자 보조 LLM 기능
-│  │  ├─ __init__.py
-│  │  └─ plain_language.py  # 어려운 법령·안내문의 쉬운 설명
+│  │  ├─ models.py     # 검색 근거 · 답변 초안 공용 모델 경계
+│  │  ├─ llm.py        # LLM 연결 경계
+│  │  ├─ prompt.py     # 근거 기반 QA 프롬프트 경계
+│  │  ├─ plain_language.py # 어려운 법령·판례·안내문의 쉬운 설명 경계
+│  │  ├─ chain.py      # Retriever → Prompt → LLM 연결 경계
+│  │  ├─ citation.py   # metadata 기반 출처 조합 · 검증 경계
+│  │  ├─ abstention.py # ANSWER · ABSTAIN · REFUSE 처리 경계
+│  │  └─ validation.py # 근거 밖 주장 · 숫자/날짜/조문 검증 경계
 │  ├─ security/        # LLM 안전장치
 │  │  ├─ __init__.py
 │  │  ├─ prompt_injection.py
@@ -39,27 +36,11 @@ jeonse-on/
 │  ├─ raw/ parsed/ chunks/           # gitignore (재수집/재생성 가능)
 │  ├─ database/        # SQLite 관계형 DB (gitignore)
 │  ├─ index/           # Chroma Vector DB (gitignore)
-│  ├─ eval/            # Dev · Holdout 평가셋, 실험 로그 (커밋)
+│  ├─ eval/            # Dev · Holdout 평가셋, 선별된 기준 실험 결과
 │  ├─ sample/          # 공개 가능 샘플 문서 (커밋)
 │  └─ manifest.jsonl   # 원문 추적 (커밋)
-├─ tests/
-│  ├─ test_generation_llm.py
-│  ├─ test_generation_prompt.py
-│  ├─ test_generation_chain.py
-│  ├─ test_generation_citation.py
-│  ├─ test_generation_abstention.py
-│  ├─ test_generation_validation.py
-│  ├─ test_plain_language.py
-│  ├─ test_prompt_injection.py
-│  └─ test_secret_filter.py
-├─ docs/
-│  ├─ chunk-schema.md
-│  ├─ rag-handoff.md
-│  ├─ document-card.md
-│  ├─ corpus-audit.md
-│  └─ planning/        # 기획서 원문·공유 PDF·구조 이미지
-│     ├─ assets/
-│     └─ reference/
+├─ tests/              # 기능별 단위 · 통합 · 회귀 테스트
+├─ docs/               # 실행법 · 데이터 규격 · 평가 · 기획 문서
 ├─ .env.example
 └─ requirements.txt
 ```
@@ -72,6 +53,12 @@ jeonse-on/
 pip install -r requirements.txt
 cp .env.example .env   # 키 값 채우기
 streamlit run app/streamlit_app.py
+```
+
+Windows PowerShell에서는 `cp` 대신 다음 명령을 쓴다.
+
+```powershell
+Copy-Item .env.example .env
 ```
 
 스캔 PDF를 처리하려면 Tesseract와 한국어 언어 데이터가 필요하다. 텍스트 레이어가 있는 PDF는 Tesseract 없이도 처리된다. macOS·Windows 설치법과 기능 한계는 `docs/registry-check.md`를 참고한다.
@@ -103,7 +90,7 @@ streamlit run app/streamlit_app.py
 | Chroma | `data/index/chroma_kurev1_1024/` | 청크 임베딩과 유사도 검색 | 재생성 가능한 파생 인덱스 |
 | 평가셋 | `data/eval/` | Dev·Holdout 질문과 정답 근거·실험 결과 | 평가 기준 |
 
-SQLite와 Chroma 생성물은 원문에서 다시 만들 수 있고 사용자 환경마다 경로가 다를 수 있으므로 Git에 커밋하지 않는다. 저장소에는 스키마, 초기화 코드, 공개 평가셋과 `data/manifest.jsonl`만 포함한다.
+SQLite와 Chroma 생성물은 원문에서 다시 만들 수 있고 사용자 환경마다 경로가 다를 수 있으므로 Git에 커밋하지 않는다. 저장소에는 스키마, 초기화 코드, 공개 평가셋, 선별된 기준 실험 결과와 `data/manifest.jsonl`만 포함한다. 새 실행 보고서·모델 비교 결과는 재현한 뒤 검토를 거쳐 필요한 것만 커밋한다.
 
 ### DB 초기화
 
@@ -273,6 +260,7 @@ python scripts/build_project_plan_pdf.py
 - `docs/chunk-schema.md` — 수집 문서에서 SQLite·Chroma까지의 청크 스키마와 검증 규칙
 - `docs/eval-audit.md` — 검색 평가셋·실험 결과 감사와 한계
 - `docs/retrieval-handoff.md` — 검색 진입점 사용법, 실행 준비, 참고 데이터 (생성·앱 담당용)
+- `docs/case-data-handoff.md` — PATCH-018 표준 판례 청크 기반 적재·평가·임베딩 비교 실행법
 - `docs/planning/project-plan.md` — 프로젝트 범위, 아키텍처, 평가와 단계별 실행 기획
 - `docs/planning/jeonseon-project-plan.pdf` — 팀 공유용 프로젝트 실행 기획서
 - `docs/planning/assets/` — 파이프라인과 프로젝트 단계 참고 이미지
@@ -329,14 +317,19 @@ python -m src.retrieval.index --chunks data/chunks/chunks.jsonl
 ```
 
 재실행하면 **입력이 현재 상태가 됩니다.** 같은 입력을 다시 넣어도 행이 중복되지 않고,
-레코드 순서가 바뀌어도 결과가 같으며, 조문을 빼고 다시 넣으면 빠진 조문과 그 청크가
-SQLite와 Chroma 양쪽에서 사라집니다.
+레코드 순서가 바뀌어도 결과가 같다. 조문을 빼고 `load_laws`를 다시 실행하면 SQLite와
+청크 JSONL에서 빠진 조문이 사라지고, 이어서 색인 명령을 실행하면 Chroma에서도 같은
+`doc_type` 범위의 오래된 벡터가 정리된다.
 
 **Chroma 에서 지우는 범위는 입력에 들어 있는 `doc_type` 안입니다.** 법령과 판례를
 같은 컬렉션에 두고 각각 따로 재색인하는 운영을 전제하기 때문입니다.
 
 ```bash
-python -m src.retrieval.index --chunks cases.jsonl   # 법령은 그대로 남습니다
+# 판례 26건 → 공통 SQLite → PATCH-018 표준 청크
+python scripts/load_case_only_demo_corpus.py
+
+# 판례 청크만 통합 Chroma에 적재. 법령 벡터는 그대로 남습니다.
+python -m src.retrieval.index --chunks data/chunks/cases.jsonl
 ```
 
 컬렉션 전체를 기준으로 잡으면 판례만 다시 넣었을 때 법령이 전부 "이번 입력에 없는
@@ -408,13 +401,56 @@ result.as_prompt_context()   # 프롬프트에 그대로 넣을 문자열
 | 라우팅 없음 (상가 포함) | 40.0% | 92.0% |
 | **라우팅 적용** | **76.0%** | **96.0%** |
 
-**Hit@5 96%가 이 코퍼스의 상한입니다.** 못 맞춘 한 문항(`dev-023` — "전세보증금반환보증은
-어떤 제도인가요?")은 정답이 `guide-HUG-전세보증금반환보증`인데 서비스 코퍼스에 가이드
-문서가 없습니다. 검색 실패가 아니라 데이터 부재이고, 라우팅은 상한을 그대로 달성했습니다.
+#### 처음 보는 문항으로 재본 결과 (holdout)
+
+위 수치는 **설정을 고르는 데 쓴 문항**으로 잰 것입니다. 같은 문항으로 다시 재면 잘
+나오는 게 당연하므로, 저장소를 본 적 없는 다른 AI 에게 질문 20개를 받아 봉인했다가
+**한 번만** 돌렸습니다. 자세한 절차와 한계는 `docs/eval-holdout.md` 입니다.
+
+| | n | Hit@1 | Hit@3 | Hit@5 | MRR |
+| --- | --- | --- | --- | --- | --- |
+| `dev` (설정을 고른 문항) | 25 | 76.0% | 88.0% | 96.0% | 0.833 |
+| **`holdout`** (처음 보는 문항) | 18 | **66.7%** | **94.4%** | **94.4%** | **0.796** |
+
+과적합의 뚜렷한 증거는 없습니다. Hit@1 이 9.3%p 낮지만 holdout 의 표준오차가 11.1%p 라
+그 안이고, Hit@3 은 오히려 holdout 이 높습니다. 다만 18문항으로는 9%p 차이를 판별할 수
+없으므로 **"과적합이 없다"고 단정하지도 않습니다.**
+
+#### 공식 안내 (HUG · 국세청)
+
+법령·판례로 답할 수 없는 질문이 있습니다. "전세보증금반환보증이 뭔가요?"는 HUG 상품
+안내이지 조문이 아니고, "집주인이 세금을 안 냈는지 확인할 수 있나요?"는 제3조의7이
+열람 권리를 정할 뿐 **어떻게** 열람하는지는 국세청 안내에 있습니다.
+
+안내가 없을 때는 검색기가 엉뚱한 조문을 자신 있게 내놓았고, `is_empty()`도 False라
+ABSTAIN으로 걸러지지 않았습니다. **못 찾는 것보다 나쁜 상태**였습니다.
+
+**원문을 그대로 수집합니다**(HUG 2,807자 · 국세청 595자 → 6청크). 요약해서 넣으면
+그 요약을 쓴 사람의 관점에 맞는 문서가 되고 측정도 부풀려집니다.
+
+`result.guides`로 **따로** 돌려주고 프롬프트에서도 `## 참고 안내 (법적 근거가 아닌
+기관 안내)`로 구분합니다. 법령과 한 묶음이면 모델이 안내 문장을 법조문처럼 인용하고,
+조문 5칸 중 하나를 안내가 차지합니다.
+
+| 정답 **근거**가 반환된 결과 안에 있는가 | 안내 없음 | 안내 포함 |
+| --- | --- | --- |
+| `dev` (25문항) | 96.0% | **100.0%** |
+| `holdout` (18문항) | 94.4% | 94.4% |
+
+**법령 검색 성능은 그대로입니다** — dev Hit@1 76.0%, holdout 66.7%로 안내 적재 전후가
+같습니다. 위 dev의 4%p는 검색기가 좋아진 것이 아니라 `dev-023`의 정답 문서가 코퍼스에
+들어온 것입니다.
+
+**안내는 질문이 그 주제일 때만 나갑니다.** 고정 2건이 아니라 0~2건 가변입니다 —
+관련 없으면 0건, 단일 주제면 1건, 두 주제이거나 한 청크로 부족하면 최대 2건입니다.
+안내가 6청크뿐이라 아무 질문에나 검색하면 항상 상위 몇 건이 나오기 때문입니다.
+유사도 임계값 대신 재현 가능한 주제 조건을 씁니다 — 문서 2건으로 문턱을 정하면 그
+표본에 맞춘 값이 됩니다. 자세한 기준은 `docs/retrieval-handoff.md` 참고.
 
 > ⚠️ **위 표와 아래 Hybrid 절의 표는 서로 다른 코퍼스에서 측정했습니다.**
-> 위 표 — 서비스가 실제로 보는 코퍼스: `data/chunks/chunks.jsonl` + `cases.jsonl`
-> (159청크, **가이드 없음**, Hit@5 상한 96%).
+> 위 표 — 서비스가 실제로 보는 코퍼스: `chunks.jsonl` + `cases.jsonl` + `guides.jsonl`
+> (165청크). 법령 지표는 안내와 무관하지만, `dev-023`의 정답인 HUG 안내가 이제
+> 코퍼스에 있어 근거 반환률은 100%입니다.
 > Hybrid 절 — 실험용 코퍼스: `data/sample/chunks_expanded.jsonl`
 > (135청크, **가이드 2건 포함**, 상한 100%).
 > 두 수치를 나란히 비교하지 마세요.
@@ -444,7 +480,7 @@ service = RetrievalService(chunks, dense, law=historical)
 공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로 돌려줍니다. 그대로 두면 엔터만 쳐도
 무관한 근거 10건이 LLM에 넘어갑니다.
 
-청크는 규격상 `[법령명 제N조(제목)]` 헤더로 시작합니다(현재 코퍼스 159건 전부).
+청크는 규격상 `[법령명 제N조(제목)]` 헤더로 시작합니다(현재 코퍼스 165건 전부).
 그 앞에 출처를 또 붙이면 같은 문장이 두 번 들어가므로, 헤더가 있으면 본문을 그대로
 씁니다. `Evidence.citation` 필드는 남겨 둡니다 — 화면에 출처만 따로 보여줄 때 본문에서
 헤더를 다시 떼어내지 않아도 되기 때문입니다.

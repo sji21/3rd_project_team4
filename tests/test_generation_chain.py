@@ -83,9 +83,9 @@ class SpyService:
         self.calls = 0
         self._inner = build_service()
 
-    def search(self, question, k_law=5, k_case=5):
+    def search(self, question, k_law=5, k_case=5, k_guide=2):
         self.calls += 1
-        return self._inner.search(question, k_law=k_law, k_case=k_case)
+        return self._inner.search(question, k_law=k_law, k_case=k_case, k_guide=k_guide)
 
 
 class AnswerQuestionTests(unittest.TestCase):
@@ -193,6 +193,7 @@ class EvidenceBudgetTests(unittest.TestCase):
 
         self.assertEqual(3, chain_module.DEFAULT_K_LAW)
         self.assertEqual(2, chain_module.DEFAULT_K_CASE)
+        self.assertEqual(2, chain_module.DEFAULT_K_GUIDE)
 
     def test_defaults_reach_the_retrieval_service(self) -> None:
         class Spy:
@@ -200,14 +201,18 @@ class EvidenceBudgetTests(unittest.TestCase):
                 self.kwargs: dict = {}
                 self._inner = build_service()
 
-            def search(self, question, k_law=5, k_case=5):
-                self.kwargs = {"k_law": k_law, "k_case": k_case}
-                return self._inner.search(question, k_law=k_law, k_case=k_case)
+            # 기본값을 실제와 다른 센티넬로 둔다. chain 이 값을 넘기지 않으면
+            # 이 값이 그대로 보여 누락이 드러난다.
+            def search(self, question, k_law=99, k_case=99, k_guide=99):
+                self.kwargs = {"k_law": k_law, "k_case": k_case, "k_guide": k_guide}
+                return self._inner.search(
+                    question, k_law=k_law, k_case=k_case, k_guide=k_guide
+                )
 
         spy = Spy()
         answer_question(QUESTION, service=spy, llm=get_llm(fake_responses=["답변"]))
 
-        self.assertEqual({"k_law": 3, "k_case": 2}, spy.kwargs)
+        self.assertEqual({"k_law": 3, "k_case": 2, "k_guide": 2}, spy.kwargs)
 
 
 class SourceDedupTests(unittest.TestCase):
@@ -256,8 +261,6 @@ class BuildQaChainTests(unittest.TestCase):
         self.assertEqual("본문", output)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 def boom_llm():
@@ -319,3 +322,150 @@ class DefaultServiceCacheTests(unittest.TestCase):
             self.assertEqual(2, len(built))
         finally:
             chain_module._build_service = original
+
+
+# ★ article_id 는 검색의 GUIDE_TOPICS 가 쓰는 guide_id 와 같아야 한다.
+#   다르면 주제 필터에 걸려 어떤 k_guide 값에도 0건이 나오고, 테스트가 아무것도
+#   검증하지 못한 채 통과한다.
+HUG_GUIDE_ID = "guide-HUG-전세보증금반환보증"
+
+
+def guide_chunk(chunk_id: str, text: str, agency: str, topic: str,
+                guide_id: str = HUG_GUIDE_ID) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "doc_id": guide_id,
+        "text": text,
+        "metadata": {
+            "title": agency,
+            "doc_type": "guide",
+            "article_id": guide_id,
+            "topic": topic,
+            "source_url": "https://example.kr/guide",
+            "status": "current",
+        },
+    }
+
+
+class GuideEvidenceTests(unittest.TestCase):
+    """검색이 낸 안내가 Answer 와 출처 목록까지 실제로 따라오는가.
+
+    검색이 안내를 프롬프트에 실어 보내므로 모델이 그것을 인용한다. Answer 가
+    안내를 버리면 인용 검증(citation.py)이 근거에 없는 출처로 보고 환각으로 잡는다.
+    """
+
+    QUESTION_GUIDE = "전세보증금반환보증은 어떤 제도인가요?"
+
+    def setUp(self) -> None:
+        guide = guide_chunk(
+            "guide1",
+            "[주택도시보증공사(전세보증금반환보증)] 보증기관이 임차인에게 보증금을 대신 지급합니다.",
+            "주택도시보증공사",
+            "전세보증금반환보증",
+        )
+        self.service = RetrievalService(CHUNKS + [guide], dense=None)
+
+    def test_retrieved_guide_reaches_answer_and_sources(self) -> None:
+        answer = answer_question(
+            self.QUESTION_GUIDE,
+            service=self.service,
+            llm=get_llm(fake_responses=["주택도시보증공사 안내에 따르면 보증기관이 대신 지급합니다."]),
+        )
+
+        self.assertEqual(1, len(answer.guides), "검색이 낸 안내가 Answer 까지 오지 않았습니다")
+        self.assertIn(answer.guides[0], answer.evidences)
+        self.assertIn(
+            "주택도시보증공사(전세보증금반환보증)",
+            [source["label"] for source in answer.sources()],
+        )
+
+    def test_k_guide_zero_turns_guides_off(self) -> None:
+        answer = answer_question(
+            self.QUESTION_GUIDE,
+            service=self.service,
+            llm=get_llm(fake_responses=["확인할 수 없습니다."]),
+            k_guide=0,
+        )
+        self.assertEqual((), answer.guides)
+
+
+class StubService:
+    """정해진 결과를 그대로 돌려주는 검색 대역. 주제 판정을 우회한다."""
+
+    def __init__(self, result) -> None:
+        self.result = result
+
+    def search(self, question, k_law=5, k_case=5, k_guide=2):
+        return self.result
+
+
+class GuideOnEveryExitTests(unittest.TestCase):
+    """answered 뿐 아니라 실패 갈래에서도 안내가 실려 나오는가.
+
+    답변을 못 만들어도 근거는 이미 찾았으므로 화면에 보여줘야 한다. 세 자리 중
+    하나라도 빠뜨리면 "실패했을 때만 안내 출처가 사라지는" 재현 어려운 버그가 된다.
+    """
+
+    def setUp(self) -> None:
+        from src.retrieval.service import Evidence, RetrievalResult
+
+        guide = Evidence(
+            rank=1,
+            chunk_id="guide1",
+            doc_type="guide",
+            citation="주택도시보증공사(전세보증금반환보증)",
+            text="보증기관이 임차인에게 보증금을 대신 지급합니다.",
+            score=1.0,
+            source_url="https://example.kr/guide",
+        )
+        law = Evidence(
+            rank=1,
+            chunk_id="law1",
+            doc_type="law",
+            citation="주택임대차보호법 제3조(대항력 등)",
+            text="그 다음 날부터 제3자에 대하여 효력이 생긴다",
+            score=1.0,
+            source_url="https://law.go.kr/x",
+        )
+        self.service = StubService(
+            RetrievalResult(question=QUESTION, laws=[law], guides=[guide])
+        )
+
+    def test_answered(self) -> None:
+        answer = answer_question(
+            QUESTION, service=self.service, llm=get_llm(fake_responses=["정상 답변입니다."])
+        )
+        self.assertEqual("answered", answer.status)
+        self.assertEqual(1, len(answer.guides))
+
+    def test_empty_answer(self) -> None:
+        answer = answer_question(
+            QUESTION, service=self.service, llm=get_llm(fake_responses=["   "])
+        )
+        self.assertEqual("abstained", answer.status)
+        self.assertEqual(1, len(answer.guides))
+
+    def test_llm_failure(self) -> None:
+        answer = answer_question(QUESTION, service=self.service, llm=boom_llm())
+        self.assertEqual("abstained", answer.status)
+        self.assertEqual(1, len(answer.guides))
+
+
+class FallbackCorpusTests(unittest.TestCase):
+    """인덱스 없이 뜨는 폴백이 검색과 같은 청크 묶음을 읽는가.
+
+    Chroma 를 못 열면 어휘 검색만으로 동작한다. 이때 읽는 청크 목록이 검색의
+    `from_index` 기본값과 어긋나면 특정 묶음만 조용히 사라진 채 서비스가 뜨고,
+    그 상태가 캐시에 굳는다. 안내(guide)가 추가됐을 때 실제로 그랬다.
+    """
+
+    def test_fallback_reads_the_same_paths_as_from_index(self) -> None:
+        import inspect
+
+        from src.retrieval.service import RetrievalService as Service
+
+        expected = inspect.signature(Service.from_index).parameters["chunk_paths"].default
+        self.assertEqual(tuple(expected), tuple(chain_module.fallback_chunk_paths()))
+
+if __name__ == "__main__":
+    unittest.main()

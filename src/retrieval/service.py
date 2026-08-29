@@ -32,16 +32,25 @@ from src.retrieval.dense import (
     SentenceTransformerEmbedding,
 )
 from src.retrieval.hybrid import HybridRetriever, Member
-from src.retrieval.retriever import BM25Retriever, Retriever, load_chunks
+from src.retrieval.retriever import (
+    _WORD_RE,
+    BM25Retriever,
+    Retriever,
+    load_chunks,
+)
 
 DEFAULT_MODEL = "nlpai-lab/KURE-v1"
 DEFAULT_INDEX = Path("data/index/chroma_kurev1_1024")
 LAW_CHUNKS = Path("data/chunks/chunks.jsonl")
 CASE_CHUNKS = Path("data/chunks/cases.jsonl")
+GUIDE_CHUNKS = Path("data/chunks/guides.jsonl")
 
 # 어느 doc_type 이 어느 묶음인지. 시행령·시행규칙은 법령과 함께 다뤄야 한다.
 LAW_TYPES = ("law", "decree", "rule")
 CASE_TYPES = ("case",)
+# 법령해석(interp)은 여기 넣지 않는다. 기관의 실무 안내와 달리 해석례는 조문의
+# 뜻을 정하는 자료라 무게가 다르다. 코퍼스에 들어오면 그때 따로 다룬다.
+GUIDE_TYPES = ("guide",)
 
 # 청크 규격의 출처 헤더. docs/chunk-schema.md 와 validate_chunks 가 쓰는 것과 같다.
 _HEADER = re.compile(r"^\[.+?\]")
@@ -62,6 +71,7 @@ class Corpus:
     dense_weight: float = 1.0
     exclude_titles: tuple[str, ...] = ()
     status: str = "current"
+    include_ids: tuple[str, ...] = ()   # 이 article_id 만 (안내 주제 한정에 쓴다)
 
     def where(self) -> dict:
         """이 묶음만 남기는 메타데이터 필터.
@@ -78,11 +88,33 @@ class Corpus:
             conditions.append({"status": self.status})
         if self.exclude_titles:
             conditions.append({"title": {"$nin": list(self.exclude_titles)}})
+        if self.include_ids:
+            conditions.append({"article_id": {"$in": list(self.include_ids)}})
         return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
 
+# 안내 묶음 제목에 사용 지침을 함께 싣는다. 안내 코퍼스가 작아 관련 없는 질문에도
+# 상위 몇 건이 항상 딸려 나오는데, 생성 쪽 프롬프트가 "아래 근거를 바탕으로 답하라"
+# 라고만 쓰면 모델이 무관한 안내를 억지로 끼워 넣는다. 지시가 근거와 함께 가야
+# 프롬프트를 누가 쓰든 지켜진다.
+GUIDE_HEADER = (
+    "## 참고 안내 (법적 근거가 아닌 기관 안내)\n"
+    "아래 자료는 질문과 관련될 때만 사용하세요. 관련이 없으면 무시하고 언급하지 "
+    "마세요. 법령이 아니므로 \"법에 따르면\" 이라고 인용하지 말고 어느 기관의 "
+    "안내인지 밝혀 주세요.\n"
+)
+
 LAW = Corpus("법령", LAW_TYPES)
 CASE = Corpus("판례", CASE_TYPES)
+
+# 공식 안내를 따로 두는 이유가 있다. HUG 상품안내나 국세청 민원안내는 **법적 근거가
+# 아니라 실무 안내**다. 법령과 한 묶음으로 넘기면 모델이 "법에 따르면 보증 한도는…"
+# 같은 문장을 쓴다. 조문 5칸 중 하나를 안내가 먹는 문제도 있다.
+#
+# 그래도 넣어야 한다. "전세보증금반환보증이 뭔가요?" 는 조문으로 답할 수 없는데,
+# 안내가 없으면 검색기가 엉뚱한 조문을 내놓고 is_empty() 도 False 라 ABSTAIN 으로
+# 걸러지지 않는다. 못 찾는 것보다 나쁘다.
+GUIDE = Corpus("안내", GUIDE_TYPES)
 
 # 코퍼스에 들어 있는 상가 법령. 주택 질문에서는 빼야 한다.
 COMMERCIAL_LAWS = ("상가건물 임대차보호법", "상가건물 임대차보호법 시행령")
@@ -116,6 +148,92 @@ def route_law_corpus(question: str, base: Corpus = LAW) -> Corpus:
 
 
 @dataclass(frozen=True)
+class GuideTopic:
+    """안내 문서 하나와 그 문서를 부르는 질문의 신호어.
+
+    안내는 법령·판례와 달리 **질문이 그 주제일 때만** 내보낸다. 전체 안내가
+    6청크뿐이라 아무 질문에나 검색하면 항상 상위 몇 건이 나온다. 임계 유사도로
+    거르는 방법도 있지만 문서 2건·표본 5개로 문턱을 정하면 그 표본에 맞춘 값이
+    된다. 지금 단계에서는 재현 가능한 주제 조건이 안전하다.
+    """
+
+    name: str
+    guide_id: str
+    signals: tuple[str, ...]
+
+
+GUIDE_TOPICS: tuple[GuideTopic, ...] = (
+    GuideTopic(
+        "보증보험",
+        "guide-HUG-전세보증금반환보증",
+        # "보증금" 단독은 넣지 않는다. 전세 질문 대부분에 나와 모든 질문이 걸린다.
+        # "전세보증" 은 넣지 않는다. "전세보증금은 언제 돌려받나요" 까지 걸린다.
+        ("전세보증금반환보증", "전세보증금 반환보증", "반환보증", "보증보험",
+         "HUG", "hug", "주택도시보증",
+         "보증 가입", "보증가입", "보증료", "보증 신청", "보증신청",
+         "보증한도", "보증 한도", "보증대상", "보증 대상", "위탁 금융기관"),
+    ),
+    GuideTopic(
+        "미납국세",
+        "guide-국세청-미납국세열람",
+        # "체납" 단독은 넣지 않는다. 차임·월세·관리비 체납 질문까지 끌어와
+        # 임대인의 세금 안내가 붙는다. 세금 맥락이 드러나는 말만 신호로 쓴다.
+        ("미납국세", "미납 국세", "미납 세금", "밀린 세금", "국세 열람", "국세열람",
+         "세금 체납", "국세 체납", "세금 체납액", "국세 체납액", "체납 국세", "납세증명",
+         "세금을 안 낸", "세금 안 낸", "세금은 안 낸",
+         "임대인 세금", "집주인 세금", "임대인의 세금", "집주인의 세금"),
+    ),
+)
+
+# 두 번째 청크를 넣을지 볼 때 무시하는 낱말. 어디에나 나와서 신호가 되지 못한다.
+_COMMON = frozenset({"경우", "해당", "가능", "안내", "확인", "필요", "내용", "제도",
+                     "어떻게", "무엇", "얼마", "언제", "어디"})
+
+# 낱말 끝의 조사. 떼지 않으면 "절차가" 가 본문의 "절차" 와 맞지 않는다.
+# 긴 것부터 본다 ("으로" 를 "로" 보다 먼저).
+_PARTICLES = ("으로부터", "에서부터", "이라도", "으로", "까지", "부터", "에서", "보다",
+              "에게", "한테", "라도", "이나", "이란", "이라", "은", "는", "이", "가",
+              "을", "를", "과", "와", "의", "에", "도", "로", "만", "랑")
+
+
+def detect_guide_topics(question: str) -> tuple[GuideTopic, ...]:
+    """질문이 어느 안내 주제인지. 해당 없으면 빈 튜플."""
+    return tuple(
+        topic
+        for topic in GUIDE_TOPICS
+        if any(signal in question for signal in topic.signals)
+    )
+
+
+def _adds_to(second: str, first: str, question: str) -> bool:
+    """두 번째 청크가 첫 번째에 없는 내용을 더하는지.
+
+    순위가 2위라는 이유만으로 넣지 않는다. 질문의 낱말 중 **첫 청크에는 없고 두
+    번째에는 있는** 것이 있을 때만 넣는다. 그래야 "신청 조건과 절차" 처럼 두
+    부분이 필요한 질문에서만 두 건이 나간다.
+
+    질문 낱말을 그대로 쓰면 "보증" 같은 주제어가 모든 청크에 있어 항상 통과한다.
+    첫 청크와 대조하는 방식이 그 문제를 함께 푼다.
+    """
+    return any(
+        word in second and word not in first for word in _query_stems(question)
+    )
+
+
+def _query_stems(question: str) -> set[str]:
+    """질문에서 대조에 쓸 낱말. 끝의 조사를 뗀다."""
+    stems: set[str] = set()
+    for word in _WORD_RE.findall(question):
+        for particle in _PARTICLES:
+            if word.endswith(particle) and len(word) - len(particle) >= 2:
+                word = word[: -len(particle)]
+                break
+        if len(word) >= 2 and word not in _COMMON:
+            stems.add(word)
+    return stems
+
+
+@dataclass(frozen=True)
 class Evidence:
     """LLM 에 넘길 근거 한 조각.
 
@@ -135,7 +253,7 @@ class Evidence:
         """프롬프트에 그대로 넣을 수 있는 한 덩어리.
 
         청크는 규격상 `[법령명 제N조(제목)]` 헤더로 시작한다 — 현재 코퍼스
-        159건 전부가 그렇다. 그 앞에 citation 을 또 붙이면 같은 문장이 두 번
+        165건 전부가 그렇다. 그 앞에 citation 을 또 붙이면 같은 문장이 두 번
         들어간다. 헤더가 있으면 본문을 그대로 쓴다.
 
         citation 필드 자체는 남긴다. 화면에 출처만 따로 보여주거나 링크를 걸 때
@@ -151,6 +269,7 @@ class RetrievalResult:
     question: str
     laws: list[Evidence] = field(default_factory=list)
     cases: list[Evidence] = field(default_factory=list)
+    guides: list[Evidence] = field(default_factory=list)
 
     def as_prompt_context(self) -> str:
         """법령과 판례를 구분해 붙인 근거 묶음.
@@ -168,10 +287,17 @@ class RetrievalResult:
             parts.append(
                 "## 관련 판례\n" + "\n\n".join(e.as_prompt_block() for e in self.cases)
             )
+        if self.guides:
+            # 안내는 맨 뒤에 두고 법적 근거가 아님을 제목에 박는다. 조문과 같은
+            # 무게로 읽으면 모델이 "법에 따르면 보증 한도는…" 같은 문장을 쓴다.
+            parts.append(
+                GUIDE_HEADER
+                + "\n\n".join(e.as_prompt_block() for e in self.guides)
+            )
         return "\n\n".join(parts)
 
     def is_empty(self) -> bool:
-        return not self.laws and not self.cases
+        return not self.laws and not self.cases and not self.guides
 
 
 def citation_of(metadata: dict) -> str:
@@ -180,6 +306,11 @@ def citation_of(metadata: dict) -> str:
     판례는 사건명만으로 무의미하다 — "추심금", "배당이의"는 여럿이다. 법원과
     사건번호가 있어야 답변에서 인용할 수 있다.
     """
+    if metadata.get("doc_type") in GUIDE_TYPES:
+        agency_title = metadata.get("title", "")
+        topic = metadata.get("topic", "")
+        return f"{agency_title}({topic})" if topic else agency_title
+
     if metadata.get("doc_type") in CASE_TYPES:
         head = " ".join(
             x for x in (metadata.get("court_name", ""), metadata.get("case_number", "")) if x
@@ -224,6 +355,7 @@ class RetrievalService:
         dense: Retriever | None = None,
         law: Corpus = LAW,
         case: Corpus = CASE,
+        guide: Corpus = GUIDE,
     ) -> None:
         """chunks 는 법령·판례가 섞여 있어도 된다. doc_type 으로 갈라 쓴다.
 
@@ -231,7 +363,7 @@ class RetrievalService:
         인덱스가 아직 없는 환경에서 앱을 띄울 수 있다.
         """
         self.dense = dense
-        self.corpora = (law, case)
+        self.corpora = (law, case, guide)
         self._chunks = {c["chunk_id"]: c for c in chunks}
         self._retrievers = {
             corpus.name: self._build(corpus, split_by_type(chunks, corpus.doc_types))
@@ -259,7 +391,7 @@ class RetrievalService:
     @classmethod
     def from_index(
         cls,
-        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS),
+        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS, GUIDE_CHUNKS),
         index_path: Path | str = DEFAULT_INDEX,
         model: str = DEFAULT_MODEL,
     ) -> "RetrievalService":
@@ -273,7 +405,7 @@ class RetrievalService:
     @classmethod
     def from_files(
         cls,
-        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS),
+        chunk_paths: tuple[Path | str, ...] = (LAW_CHUNKS, CASE_CHUNKS, GUIDE_CHUNKS),
         backend: EmbeddingBackend | None = None,
     ) -> "RetrievalService":
         """Chroma 없이 메모리에서 임베딩한다. 평가·실험용."""
@@ -295,8 +427,18 @@ class RetrievalService:
             if chunk_id in self._chunks
         ]
 
-    def search(self, question: str, k_law: int = 5, k_case: int = 5) -> RetrievalResult:
-        """법령 k_law 건, 판례 k_case 건을 각각 뽑는다.
+    def search(
+        self,
+        question: str,
+        k_law: int = 5,
+        k_case: int = 5,
+        k_guide: int = 2,
+    ) -> RetrievalResult:
+        """법령 k_law 건, 판례 k_case 건, 공식 안내 k_guide 건을 각각 뽑는다.
+
+        k_guide 는 **상한**이다. 실제 건수는 질문 주제에 따라 0~k_guide 로 달라진다
+        (`_search_guides` 참고). 안내가 법적 근거가 아니라 실무 절차를 보태는
+        자리이므로 상한을 낮게 둔다. 0 으로 주면 안내를 끄는 것이다.
 
         질문이 비어 있으면 빈 결과를 준다. BM25 는 토큰이 없어 스스로 아무것도
         내지 않지만, 임베딩은 공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로
@@ -306,12 +448,51 @@ class RetrievalService:
         if not question or not question.strip():
             return RetrievalResult(question=question)
 
-        law, case = self.corpora
+        law, case, guide = self.corpora
         return RetrievalResult(
             question=question,
             laws=self._search_one(route_law_corpus(question, law), question, k_law),
             cases=self._search_one(case, question, k_case),
+            guides=self._search_guides(guide, question, k_guide),
         )
+
+    def _search_guides(
+        self, corpus: Corpus, question: str, limit: int
+    ) -> list[Evidence]:
+        """안내는 질문이 그 주제일 때만, 0~limit 건을 가변으로 낸다.
+
+        법령·판례처럼 고정 개수로 내보내면 관련 없는 질문에도 항상 따라붙는다.
+        안내가 6청크뿐이라 어떤 질문에도 상위 몇 건이 나오기 때문이다.
+
+        규칙:
+          주제 없음        -> 0건
+          주제 하나        -> 가장 관련 있는 1건. 두 번째는 질문의 낱말을 직접
+                              담고 있을 때만 넣는다(순위 2위라는 이유만으로는 안 넣음)
+          주제 둘          -> 각 주제에서 1건씩
+        """
+        topics = detect_guide_topics(question)
+        if not topics or limit <= 0:
+            return []
+
+        if len(topics) == 1:
+            found = self._search_one(
+                replace(corpus, include_ids=(topics[0].guide_id,)), question, min(2, limit)
+            )
+            if len(found) > 1 and not _adds_to(found[1].text, found[0].text, question):
+                found = found[:1]
+            return found[:limit]
+
+        picked: list[Evidence] = []
+        for topic in topics[:limit]:
+            hit = self._search_one(
+                replace(corpus, include_ids=(topic.guide_id,)), question, 1
+            )
+            picked.extend(hit)
+        # 순위는 묶음 안에서 다시 매긴다.
+        return [
+            Evidence(i, e.chunk_id, e.doc_type, e.citation, e.text, e.score, e.source_url)
+            for i, e in enumerate(picked[:limit], start=1)
+        ]
 
 
 def _load_all(paths: tuple[Path | str, ...]) -> list[dict]:

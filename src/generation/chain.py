@@ -58,15 +58,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_K_LAW = 3
 DEFAULT_K_CASE = 2
 
+# 공식 안내는 상한이다. 검색이 질문 주제일 때만 0~2건을 내므로 무관한 질문에는
+# 따라붙지 않는다. 법적 근거가 아니라 실무 절차 자료라 법령·판례와 별도로 센다.
+DEFAULT_K_GUIDE = 2
+
 _SETUP_HINT = (
     "검색 인덱스를 찾지 못했습니다. docs/retrieval-handoff.md 3절 순서대로 준비하세요.\n"
     "  python -m src.ingestion.fetch_law_mock --records data/parsed/law_records.jsonl\n"
     "  python -m src.ingestion.load_laws --records data/parsed/law_records.jsonl "
     "--export data/chunks/chunks.jsonl\n"
     "  python scripts/load_case_only_demo_corpus.py\n"
+    "  python -m src.ingestion.fetch_guides --records data/parsed/guide_records.jsonl\n"
+    "  python -m src.ingestion.load_guides --records data/parsed/guide_records.jsonl "
+    "--export data/chunks/guides.jsonl\n"
     "  python -m src.retrieval.index --chunks data/chunks/chunks.jsonl "
     "--path data/index/chroma_kurev1_1024\n"
     "  python -m src.retrieval.index --chunks data/chunks/cases.jsonl "
+    "--path data/index/chroma_kurev1_1024\n"
+    "  python -m src.retrieval.index --chunks data/chunks/guides.jsonl "
     "--path data/index/chroma_kurev1_1024"
 )
 
@@ -92,6 +101,18 @@ def get_default_service() -> RetrievalService:
     return _service
 
 
+def fallback_chunk_paths() -> tuple:
+    """인덱스 없이 뜰 때 읽을 청크 파일들.
+
+    ★ 검색의 `from_index` 기본값과 같아야 한다. 어긋나면 특정 묶음만 조용히
+      빠진 채로 서비스가 뜬다. 안내(guide)가 추가됐을 때 실제로 그랬다.
+      `tests/test_generation_chain.py`의 FallbackCorpusTests 가 두 값을 대조한다.
+    """
+    from src.retrieval.service import CASE_CHUNKS, GUIDE_CHUNKS, LAW_CHUNKS
+
+    return (LAW_CHUNKS, CASE_CHUNKS, GUIDE_CHUNKS)
+
+
 def _build_service() -> RetrievalService:
     try:
         return RetrievalService.from_index()
@@ -104,10 +125,9 @@ def _build_service() -> RetrievalService:
 
     # 검색팀 모듈의 공개 이름만 쓴다. 밑줄로 시작하는 이름은 예고 없이 바뀐다.
     from src.retrieval.retriever import load_chunks
-    from src.retrieval.service import CASE_CHUNKS, LAW_CHUNKS
 
     chunks: list[dict] = []
-    for path in (LAW_CHUNKS, CASE_CHUNKS):
+    for path in fallback_chunk_paths():
         if Path(path).exists():          # 한쪽이 없어도 나머지로 동작해야 한다
             chunks.extend(load_chunks(path))
 
@@ -148,6 +168,7 @@ def answer_question(
     llm=None,
     k_law: int = DEFAULT_K_LAW,
     k_case: int = DEFAULT_K_CASE,
+    k_guide: int = DEFAULT_K_GUIDE,
     refuse_check: Callable[[str], bool] | None = None,
 ) -> Answer:
     """질문 하나에 대해 검색 → 프롬프트 → LLM → 답변을 전부 실행한다.
@@ -164,7 +185,9 @@ def answer_question(
         )
 
     service = service if service is not None else get_default_service()
-    result: RetrievalResult = service.search(question, k_law=k_law, k_case=k_case)
+    result: RetrievalResult = service.search(
+        question, k_law=k_law, k_case=k_case, k_guide=k_guide
+    )
 
     # 빈 질문과 근거 없음이 여기서 함께 걸린다. 검색 쪽이 빈 질문에 빈 결과를
     # 주기로 되어 있어(docs/retrieval-handoff.md 5절) 따로 검사하지 않는다.
@@ -193,6 +216,7 @@ def answer_question(
             text=f"{prompt_module.GENERATION_FAILED_TEXT}\n\n{prompt_module.DISCLAIMER}",
             laws=tuple(result.laws),
             cases=tuple(result.cases),
+            guides=tuple(result.guides),
         )
 
     # 근거는 찾았는데 모델이 답을 못 만든 경우. 대개 사고 과정에 토큰 예산을
@@ -210,6 +234,7 @@ def answer_question(
             text=f"{prompt_module.GENERATION_FAILED_TEXT}\n\n{prompt_module.DISCLAIMER}",
             laws=tuple(result.laws),
             cases=tuple(result.cases),
+            guides=tuple(result.guides),
         )
 
     return Answer(
@@ -219,4 +244,5 @@ def answer_question(
         raw_text=raw_text,
         laws=tuple(result.laws),
         cases=tuple(result.cases),
+        guides=tuple(result.guides),
     )
