@@ -113,6 +113,11 @@ def load_guide_records(
 
     청크는 안내가 짧아지면 개수가 줄 수 있으므로, 문서별로 지우고 다시 넣는다.
     upsert 만 하면 예전 청크가 남아 계속 검색된다.
+
+    **커밋하지 않는다.** 건너뛴 레코드가 있으면 호출한 쪽이 되돌려야 하는데,
+    여기서 커밋해 버리면 stale 정리와 일부 적재가 이미 반영된 뒤가 된다. 그러면
+    실패로 보고하면서 DB 는 바꿔 놓은 상태가 되고, 다음 실행의 export 가 검증되지
+    않은 상태를 내보낸다.
     """
     summary = GuideLoadSummary()
 
@@ -201,7 +206,6 @@ def load_guide_records(
             )
             summary.chunks += 1
 
-    connection.commit()
     return summary
 
 
@@ -292,13 +296,19 @@ def main() -> int:
         print("  guide_law_references: 검증된 원천이 없어 적재하지 않음")
 
         if summary.skipped:
-            # 조용히 버리면 26건 넣고 20건만 들어가도 알 수 없다.
+            # 조용히 버리면 2건 넣고 1건만 들어가도 알 수 없다. 그리고 DB 도
+            # 되돌린다 — 실패로 보고하면서 절반만 반영해 두면 안 된다.
+            connection.rollback()
             print(f"\n  건너뛴 레코드 {len(summary.skipped)}건:")
             for problem in summary.skipped:
                 print(f"    {problem}")
-            print("\n  청크를 추출하지 않았습니다. 원천을 고친 뒤 다시 실행하세요.")
+            print(
+                "\n  DB 를 되돌렸고 청크도 추출하지 않았습니다. "
+                "원천을 고친 뒤 다시 실행하세요."
+            )
             return 1
 
+        connection.commit()
         exported = export_guide_chunks(connection, Path(args.export))
 
     print(f"  청크 추출: {args.export} ({exported}건)\n")

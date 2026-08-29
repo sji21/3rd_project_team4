@@ -143,7 +143,8 @@ Windows PowerShell 이면 `$env:HF_HUB_OFFLINE = "1"` 형태로 설정합니다.
 | `data/database/knowledge.sqlite3` | 원천. 법령 133조문 · 판례 26건 | gitignore |
 | `data/chunks/chunks.jsonl` | 법령 청크 133건 | gitignore |
 | `data/chunks/cases.jsonl` | 판례 청크 26건 | gitignore |
-| `data/index/chroma_kurev1_1024` | KURE-v1 벡터 159건 | gitignore |
+| `data/chunks/guides.jsonl` | 공식 안내 청크 6건 | gitignore |
+| `data/index/chroma_kurev1_1024` | KURE-v1 벡터 165건 | gitignore |
 | `data/eval/dev.jsonl` | 평가 질문 27문항 (25개에 정답 조문) | 저장소에 있음 |
 | `docs/chunk-schema.md` | 청크 규격 | 새 문서 추가 시 필독 |
 | `docs/eval-questions.md` | 평가 질문 목록 | |
@@ -167,8 +168,9 @@ HUG·국세청 안내를 `result.guides` 로 따로 돌려줍니다. **법적 �
 | 공식 안내 | 6청크 |
 | **Chroma 합계** | **165청크** |
 
-법령 5칸을 안내가 먹지 않습니다. 기본 검색은 **법령 5 + 판례 5 + 안내 2 = 12건**이고,
-법령 목록에는 `law`·`decree`만 들어갑니다.
+법령 5칸을 안내가 먹지 않습니다. 기본 검색은 **법령 5 + 판례 5 + 안내 0~2 = 10~12건**
+이고, 법령 목록에는 `law`·`decree`만 들어갑니다. 안내 건수는 질문 주제에 따라 달라지며
+법령·판례 건수에는 영향을 주지 않습니다.
 
 #### 안내 반환 기준 — 0~2건 가변
 
@@ -197,7 +199,7 @@ HUG·국세청 안내를 `result.guides` 로 따로 돌려줍니다. **법적 �
 묵시적 갱신이면 계약 기간이 얼마가 되나요?          안내 0건
 계약갱신요구권은 몇 번까지 쓸 수 있나요?            안내 0건
 전세보증금반환보증은 어떤 제도인가요?               안내 1건  [보증보험]
-보증 가입 조건과 신청 절차가 어떻게 되나요?          안내 2건  [보증보험]
+보증 신청 절차만 따로 묻는 질문                       안내 1건  [보증보험]
 집주인이 세금 안 낸 게 있는지 확인할 수 있나요?      안내 1건  [미납국세]
 전세보증 가입하려는데 집주인 미납국세도 확인하고…    안내 2건  [보증보험 + 미납국세]
 ```
@@ -339,8 +341,8 @@ ABSTAIN 처리하면 됩니다. BM25 는 토큰이 없어 스스로 아무것도
 ## 7. 검증 상태
 
 ```
-전체 테스트  186 passed, 2 skipped
-진입점 테스트 48 passed · 안내 적재 15 passed
+전체 테스트  188 passed, 2 skipped
+진입점 테스트 48 passed · 안내 수집·적재 17 passed
 ```
 
 오류 2건이 함께 나오는데 `tests/test_pdf_extraction.py`의 parametrize id가 Windows

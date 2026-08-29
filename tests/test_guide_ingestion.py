@@ -150,6 +150,7 @@ class TestLoading:
     def test_reloading_the_same_input_does_not_duplicate(self, database):
         with closing(connect_database(database)) as connection:
             load_guide_records([record()], connection)
+            connection.commit()
             first = self.counts(connection)
             load_guide_records([record()], connection)
             assert self.counts(connection) == first
@@ -204,3 +205,44 @@ class TestCliGuards:
             assert main() == 1
         assert "비어 있습니다" in capsys.readouterr().out
         assert not (tmp_path / "out.jsonl").exists()
+
+
+class TestAtomicity:
+    """실패로 보고하면서 DB 를 절반만 바꿔 놓으면 안 된다."""
+
+    def test_load_does_not_commit_on_its_own(self, tmp_path):
+        """호출한 쪽이 rollback 할 수 있어야 한다."""
+        database = tmp_path / "t.sqlite3"
+        initialize_relational_database(database)
+        with closing(connect_database(database)) as connection:
+            load_guide_records([record()], connection)
+            connection.rollback()
+            assert connection.execute("SELECT COUNT(*) FROM guides").fetchone()[0] == 0
+        gc.collect()
+
+    def test_skipped_record_rolls_back_the_whole_run(self, tmp_path, capsys):
+        """빈 본문 하나가 섞이면 그 실행 전체를 되돌린다."""
+        from src.ingestion.load_guides import main
+
+        database = tmp_path / "t.sqlite3"
+        good, bad = record("guide-a"), record("guide-b", content="   ")
+        records = tmp_path / "records.jsonl"
+        records.write_text(
+            "\n".join(
+                json.dumps(r.__dict__, ensure_ascii=False) for r in (good, bad)
+            ),
+            encoding="utf-8",
+        )
+        export = tmp_path / "out.jsonl"
+        argv = ["load_guides", "--records", str(records),
+                "--database", str(database), "--export", str(export)]
+        with mock.patch.object(sys, "argv", argv):
+            assert main() == 1
+
+        out = capsys.readouterr().out
+        assert "건너뛴 레코드 1건" in out
+        assert "되돌렸" in out
+        assert not export.exists()
+        with closing(connect_database(database)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM guides").fetchone()[0] == 0
+        gc.collect()

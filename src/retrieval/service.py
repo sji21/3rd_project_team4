@@ -166,19 +166,34 @@ GUIDE_TOPICS: tuple[GuideTopic, ...] = (
     GuideTopic(
         "보증보험",
         "guide-HUG-전세보증금반환보증",
-        ("전세보증", "반환보증", "보증보험", "HUG", "hug", "주택도시보증",
-         "보증 가입", "보증가입", "보증료", "보증 신청", "보증신청", "보증한도"),
+        # "보증금" 단독은 넣지 않는다. 전세 질문 대부분에 나와 모든 질문이 걸린다.
+        # "전세보증" 은 넣지 않는다. "전세보증금은 언제 돌려받나요" 까지 걸린다.
+        ("전세보증금반환보증", "전세보증금 반환보증", "반환보증", "보증보험",
+         "HUG", "hug", "주택도시보증",
+         "보증 가입", "보증가입", "보증료", "보증 신청", "보증신청",
+         "보증한도", "보증 한도", "보증대상", "보증 대상", "위탁 금융기관"),
     ),
     GuideTopic(
         "미납국세",
         "guide-국세청-미납국세열람",
-        ("미납국세", "미납 국세", "체납", "국세 열람", "국세열람", "세금을 안 낸",
-         "세금 안 낸", "임대인 세금", "집주인 세금", "세금 체납", "납세증명"),
+        # "체납" 단독은 넣지 않는다. 차임·월세·관리비 체납 질문까지 끌어와
+        # 임대인의 세금 안내가 붙는다. 세금 맥락이 드러나는 말만 신호로 쓴다.
+        ("미납국세", "미납 국세", "미납 세금", "밀린 세금", "국세 열람", "국세열람",
+         "세금 체납", "국세 체납", "체납액", "체납 국세", "납세증명",
+         "세금을 안 낸", "세금 안 낸", "세금은 안 낸",
+         "임대인 세금", "집주인 세금", "임대인의 세금", "집주인의 세금"),
     ),
 )
 
 # 두 번째 청크를 넣을지 볼 때 무시하는 낱말. 어디에나 나와서 신호가 되지 못한다.
-_COMMON = frozenset({"경우", "해당", "가능", "신청", "안내", "확인", "필요", "내용", "제도"})
+_COMMON = frozenset({"경우", "해당", "가능", "안내", "확인", "필요", "내용", "제도",
+                     "어떻게", "무엇", "얼마", "언제", "어디"})
+
+# 낱말 끝의 조사. 떼지 않으면 "절차가" 가 본문의 "절차" 와 맞지 않는다.
+# 긴 것부터 본다 ("으로" 를 "로" 보다 먼저).
+_PARTICLES = ("으로부터", "에서부터", "이라도", "으로", "까지", "부터", "에서", "보다",
+              "에게", "한테", "라도", "이나", "이란", "이라", "은", "는", "이", "가",
+              "을", "를", "과", "와", "의", "에", "도", "로", "만", "랑")
 
 
 def detect_guide_topics(question: str) -> tuple[GuideTopic, ...]:
@@ -190,18 +205,32 @@ def detect_guide_topics(question: str) -> tuple[GuideTopic, ...]:
     )
 
 
-def _shares_query_terms(text: str, question: str) -> bool:
-    """청크가 질문의 낱말을 직접 담고 있는지.
+def _adds_to(second: str, first: str, question: str) -> bool:
+    """두 번째 청크가 첫 번째에 없는 내용을 더하는지.
 
-    순위가 2위라는 이유만으로 두 번째 청크를 넣지 않는다. 질문의 핵심어를 실제로
-    담고 있을 때만 넣는다.
+    순위가 2위라는 이유만으로 넣지 않는다. 질문의 낱말 중 **첫 청크에는 없고 두
+    번째에는 있는** 것이 있을 때만 넣는다. 그래야 "신청 조건과 절차" 처럼 두
+    부분이 필요한 질문에서만 두 건이 나간다.
+
+    질문 낱말을 그대로 쓰면 "보증" 같은 주제어가 모든 청크에 있어 항상 통과한다.
+    첫 청크와 대조하는 방식이 그 문제를 함께 푼다.
     """
-    words = {
-        w
-        for w in _WORD_RE.findall(question)
-        if len(w) >= 2 and w not in _COMMON
-    }
-    return any(word in text for word in words)
+    return any(
+        word in second and word not in first for word in _query_stems(question)
+    )
+
+
+def _query_stems(question: str) -> set[str]:
+    """질문에서 대조에 쓸 낱말. 끝의 조사를 뗀다."""
+    stems: set[str] = set()
+    for word in _WORD_RE.findall(question):
+        for particle in _PARTICLES:
+            if word.endswith(particle) and len(word) - len(particle) >= 2:
+                word = word[: -len(particle)]
+                break
+        if len(word) >= 2 and word not in _COMMON:
+            stems.add(word)
+    return stems
 
 
 @dataclass(frozen=True)
@@ -224,7 +253,7 @@ class Evidence:
         """프롬프트에 그대로 넣을 수 있는 한 덩어리.
 
         청크는 규격상 `[법령명 제N조(제목)]` 헤더로 시작한다 — 현재 코퍼스
-        159건 전부가 그렇다. 그 앞에 citation 을 또 붙이면 같은 문장이 두 번
+        165건 전부가 그렇다. 그 앞에 citation 을 또 붙이면 같은 문장이 두 번
         들어간다. 헤더가 있으면 본문을 그대로 쓴다.
 
         citation 필드 자체는 남긴다. 화면에 출처만 따로 보여주거나 링크를 걸 때
@@ -407,8 +436,9 @@ class RetrievalService:
     ) -> RetrievalResult:
         """법령 k_law 건, 판례 k_case 건, 공식 안내 k_guide 건을 각각 뽑는다.
 
-        안내를 2건만 두는 것은 코퍼스에 7청크뿐이어서가 아니라, 안내가 법적 근거가
-        아니기 때문이다. 조문·판례가 답의 중심이고 안내는 실무 절차를 보태는 자리다.
+        k_guide 는 **상한**이다. 실제 건수는 질문 주제에 따라 0~k_guide 로 달라진다
+        (`_search_guides` 참고). 안내가 법적 근거가 아니라 실무 절차를 보태는
+        자리이므로 상한을 낮게 둔다. 0 으로 주면 안내를 끄는 것이다.
 
         질문이 비어 있으면 빈 결과를 준다. BM25 는 토큰이 없어 스스로 아무것도
         내지 않지만, 임베딩은 공백도 벡터로 바꿔 아무 문서나 가장 가까운 것으로
@@ -448,7 +478,7 @@ class RetrievalService:
             found = self._search_one(
                 replace(corpus, include_ids=(topics[0].guide_id,)), question, min(2, limit)
             )
-            if len(found) > 1 and not _shares_query_terms(found[1].text, question):
+            if len(found) > 1 and not _adds_to(found[1].text, found[0].text, question):
                 found = found[:1]
             return found[:limit]
 
