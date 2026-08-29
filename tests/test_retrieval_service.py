@@ -13,7 +13,9 @@ from src.retrieval.retriever import matches
 from src.retrieval.service import (
     CASE,
     COMMERCIAL_LAWS,
+    GUIDE,
     LAW,
+    detect_guide_topics,
     Corpus,
     Evidence,
     RetrievalService,
@@ -59,6 +61,22 @@ def case_chunk(chunk_id: str, text: str, number: str) -> dict:
     }
 
 
+def guide_chunk(chunk_id: str, text: str, title: str, topic: str) -> dict:
+    return {
+        "chunk_id": chunk_id,
+        "doc_id": f"guide-document:{chunk_id}",
+        "text": text,
+        "metadata": {
+            "title": title,
+            "doc_type": "guide",
+            "article_id": chunk_id.split("#")[0],
+            "topic": topic,
+            "source_url": "https://www.khug.or.kr/z",
+            "status": "current",
+        },
+    }
+
+
 REPEALED = law_chunk(
     "law_old", "구법 시절의 대항력 조문이다. 지금은 폐지되었다", "제3조",
 )
@@ -71,6 +89,15 @@ CHUNKS = [
               title="주택임대차보호법 시행령", doc_type="decree"),
     case_chunk("case1", "임차주택이 양도되면 양수인이 임대인의 지위를 승계한다", "2011다49523"),
     case_chunk("case2", "공동임차인 중 1명의 대항력은 임대차 전체에 미친다", "2021다238650"),
+    guide_chunk("guide-HUG-전세보증금반환보증#0",
+                "전세보증금반환보증은 임대인이 보증금을 돌려주지 않을 때 공사가 대신 지급한다",
+                "HUG 전세보증금반환보증 상품안내", "전세보증금 반환보증"),
+    guide_chunk("guide-HUG-전세보증금반환보증#1",
+                "보증 신청 절차는 위탁 금융기관 또는 모바일 앱으로 진행한다",
+                "HUG 전세보증금반환보증 상품안내", "전세보증금 반환보증"),
+    guide_chunk("guide-국세청-미납국세열람#0",
+                "임대인의 미납국세는 임대차개시일까지 세무서에서 열람 신청할 수 있다",
+                "국세청 미납국세 등 열람신청 안내", "임대인 미납국세 열람"),
     REPEALED,
 ]
 
@@ -127,11 +154,19 @@ class SeparationTests(unittest.TestCase):
     def test_shared_dense_index_is_filtered_per_corpus(self):
         """Chroma 는 컬렉션 하나를 공유한다. 필터가 빠지면 판례가 법령 쪽에 섞인다."""
         dense = FakeDense(CHUNKS)
+        # 안내는 질문이 그 주제일 때만 검색하므로 신호어가 있는 질문을 쓴다.
+        RetrievalService(CHUNKS, dense).search("전세보증금반환보증 대항력", k_law=3, k_case=3)
+        filters = [call[2] for call in dense.calls]
+        self.assertEqual(len(filters), 3)
+        wanted = [LAW.doc_types, CASE.doc_types, GUIDE.doc_types]
+        for where, doc_types in zip(filters, wanted):
+            self.assertIn({"doc_type": {"$in": list(doc_types)}}, where["$and"])
+
+    def test_guide_search_is_skipped_when_the_question_has_no_guide_topic(self):
+        """관련 없는 질문에서는 안내 검색을 아예 돌리지 않는다."""
+        dense = FakeDense(CHUNKS)
         RetrievalService(CHUNKS, dense).search("대항력", k_law=3, k_case=3)
-        law_filter, case_filter = [call[2] for call in dense.calls]
-        # 두 묶음 다 $and 로 나간다 (doc_type + status, 법령은 상가 제외까지)
-        self.assertIn({"doc_type": {"$in": list(LAW.doc_types)}}, law_filter["$and"])
-        self.assertIn({"doc_type": {"$in": list(CASE.doc_types)}}, case_filter["$and"])
+        self.assertEqual(len(dense.calls), 2)
 
     def test_bm25_is_built_per_corpus_not_shared(self):
         """IDF 가 코퍼스 전체 기준이라 쪼개지 않으면 서로의 점수를 왜곡한다."""
@@ -375,3 +410,102 @@ class BlankQueryTests(unittest.TestCase):
 
     def test_a_real_question_still_works(self):
         self.assertFalse(build().search("대항력").is_empty())
+
+
+class GuideRoutingTests(unittest.TestCase):
+    """안내는 질문이 그 주제일 때만 나간다.
+
+    법령·판례처럼 고정 개수로 내보내면 관련 없는 질문에도 항상 따라붙는다.
+    안내가 6청크뿐이라 어떤 질문에도 상위 몇 건이 나오기 때문이다.
+    """
+
+    UNRELATED = [
+        "묵시적 갱신이면 계약 기간이 얼마가 되나요?",
+        "계약갱신요구권은 몇 번까지 쓸 수 있나요?",
+        "2기 차임을 연체하면 어떻게 되나요?",
+        "관리비 체납액은 얼마인가요?",
+        "지방세 체납액도 열람할 수 있나요?",
+    ]
+
+    def test_unrelated_questions_get_no_guides(self):
+        for question in self.UNRELATED:
+            with self.subTest(question=question):
+                self.assertEqual(detect_guide_topics(question), ())
+                self.assertEqual(build().search(question).guides, [])
+
+    def test_one_topic_returns_one_chunk_by_default(self):
+        """순위가 2위라는 이유만으로 두 번째를 넣지 않는다."""
+        result = build().search("전세보증금반환보증은 어떤 제도인가요?")
+        self.assertEqual(len(result.guides), 1)
+
+    def test_second_chunk_joins_only_when_it_carries_query_terms(self):
+        result = build().search("보증 신청 절차는 어떻게 되나요?")
+        self.assertEqual(len(result.guides), 2)
+        self.assertIn("절차", result.guides[1].text)
+
+    def test_two_topics_return_one_chunk_each(self):
+        question = "전세보증 가입하려는데 임대인 미납국세도 확인하고 싶어요"
+        self.assertEqual(len(detect_guide_topics(question)), 2)
+        guides = build().search(question).guides
+        self.assertEqual(len(guides), 2)
+        self.assertEqual(
+            {e.chunk_id.split("#")[0] for e in guides},
+            {"guide-HUG-전세보증금반환보증", "guide-국세청-미납국세열람"},
+        )
+        self.assertEqual([e.rank for e in guides], [1, 2])
+
+    def test_never_more_than_the_limit(self):
+        for limit in (0, 1, 2):
+            with self.subTest(limit=limit):
+                guides = build().search(
+                    "전세보증 가입과 미납국세 열람 절차", k_guide=limit
+                ).guides
+                self.assertLessEqual(len(guides), limit)
+
+    def test_guides_do_not_change_the_law_or_case_counts(self):
+        with_guides = build().search("전세보증금반환보증은 어떤 제도인가요?")
+        without = build().search("전세보증금반환보증은 어떤 제도인가요?", k_guide=0)
+        self.assertEqual(len(with_guides.laws), len(without.laws))
+        self.assertEqual(len(with_guides.cases), len(without.cases))
+
+
+class GuidePresentationTests(unittest.TestCase):
+    """안내는 법적 근거가 아니다. 조문과 섞이면 모델이 법조문처럼 인용한다."""
+
+    QUESTION = "전세보증금반환보증은 어떤 제도인가요?"
+
+    def test_guides_come_back_in_their_own_list(self):
+        result = build().search(self.QUESTION)
+        self.assertTrue(result.guides)
+        self.assertTrue(all(e.doc_type in GUIDE.doc_types for e in result.guides))
+        self.assertTrue(all(e.doc_type not in GUIDE.doc_types for e in result.laws))
+
+    def test_prompt_tells_the_model_to_ignore_unrelated_guides(self):
+        """지시를 근거와 함께 보낸다. 별도 안내로 두면 프롬프트에서 빠뜨린다."""
+        context = build().search(self.QUESTION).as_prompt_context()
+        self.assertIn("## 참고 안내", context)
+        self.assertIn("법적 근거가 아닌", context)
+        self.assertIn("관련이 없으면 무시", context)
+
+    def test_guides_come_after_laws_and_cases_in_the_prompt(self):
+        context = build().search(self.QUESTION, k_law=1, k_case=1).as_prompt_context()
+        self.assertLess(context.index("## 관련 법령"), context.index("## 참고 안내"))
+        self.assertLess(context.index("## 관련 판례"), context.index("## 참고 안내"))
+
+    def test_guide_citation_carries_agency_and_topic(self):
+        guides = build().search(self.QUESTION).guides
+        self.assertIn("HUG", guides[0].citation)
+        self.assertIn("전세보증금 반환보증", guides[0].citation)
+
+    def test_zero_k_guide_skips_them(self):
+        result = build().search(self.QUESTION, k_guide=0)
+        self.assertEqual(result.guides, [])
+        self.assertNotIn("## 참고 안내", result.as_prompt_context())
+
+    def test_a_result_with_only_guides_is_not_empty(self):
+        result = build().search(self.QUESTION, k_law=0, k_case=0)
+        self.assertFalse(result.is_empty())
+
+    def test_interpretations_are_not_lumped_in_with_guides(self):
+        """법령해석은 조문의 뜻을 정하는 자료라 실무 안내와 무게가 다르다."""
+        self.assertNotIn("interp", GUIDE.doc_types)
