@@ -21,13 +21,16 @@
 | [x] | PATCH-016 | 완료 | sji21 | `feat/patch-016-hybrid-rrf` | 기능 추가 | 높음 | BM25와 임베딩 검색을 RRF로 결합 | 점수 척도가 다른 두 검색기를 순위로 합치고, 같은 `search(query, k, where)` 인터페이스를 유지하며, 각 검색기가 서로 다른 문항에서 실패하던 것이 결합 후 해소되어야 한다 | PATCH-014 | - | 2026-08-28 | 2026-08-28 | `2e658ae` |
 | [x] | PATCH-017 | 완료 | sji21 | `fix/patch-017-index-scope` | 버그 수정 | 높음 | Chroma 색인의 삭제 범위를 입력의 doc_type 으로 한정 | 법령과 판례를 같은 컬렉션에 두고 각각 따로 재색인해도 서로의 문서가 지워지지 않아야 하고, 같은 doc_type 안에서는 빠진 청크가 계속 정리되어야 하며, 빈 입력이 컬렉션을 비우지 않아야 한다 | PATCH-014 | - | 2026-08-28 | 2026-08-28 | `c49921d` |
 | [ ] | PATCH-018 | 진행 중 | sji21 | `feat/patch-018-retrieval-entrypoint` | 기능 추가 | 높음 | 검색 진입점: 법령 TOP5 + 판례 TOP5 를 근거로 반환 | 질문 하나에 법령과 판례를 각각 따로 뽑아 본문과 출처가 붙은 형태로 돌려주고, 생성 쪽이 검색 내부를 몰라도 쓸 수 있어야 하며, 묶음별 파라미터를 나중에 따로 튜닝할 수 있는 구조여야 한다 | PATCH-017 | - | 2026-08-28 | - | - |
+| [ ] | PATCH-019 | 진행 중 | BellaHez | `feat/patch-019-generation-core` | 기능 추가 | 높음 | 검색 진입점과 로컬 LLM 을 LCEL 체인으로 연결 | `RetrievalService` 가 준 근거로 프롬프트를 만들어 로컬 양자화 LLM(Qwen3-8B)에 넘기고, answered·abstained·refused 세 갈래로만 끝나야 하며, 면책 문구와 출처는 LLM 이 아니라 코드가 붙이고, Ollama 없이도 도는 테스트가 통과해야 한다 | PATCH-015, PATCH-018 | - | 2026-08-29 | - | - |
 
 ## 현재 작업 경계
 
 - 현재 완료 패치: `PATCH-014` (PR #1 병합, `PATCH-013` 포함)
 - 현재 완료 패치: `PATCH-016` (PR #3 병합)
 - 현재 완료 패치: `PATCH-017` (PR #4 병합)
-- 현재 진행 패치: `PATCH-018` (검색 담당)
+- 현재 진행 패치: `PATCH-018` (검색 담당), `PATCH-019` (생성 담당)
+- 생성 파트 검증: 전체 테스트 226개 통과(스킵 2) — 생성 신규 71개 포함. `src/retrieval/*`·`.env.example`·`README.md` 는 수정하지 않았다(`requirements.txt` 는 직접 import 하는 `langchain-core` 누락과 `langchain-openai` 버전 미고정을 팀 합의로 반영)
+- 생성 파트는 근거를 법령 3건·판례 2건만 쓴다(`docs/retrieval-handoff.md` 42행의 건수 조절 안내). 5+5 로는 8B 모델이 초점을 잃어 오답을 냈고, 3+2 로 줄이자 같은 문항이 정답으로 바뀐 측정 결과에 따른 것이다. 더 큰 모델로 바꾸면 재측정해야 한다
 - `PATCH-015`는 생성 담당이 완료해 병합됨(PR #2)
 - 임베딩 모델: `nlpai-lab/KURE-v1` (1024차원) — 모델 비교 결과로 확정
 - 검증 결과: 전체 테스트 155개 통과(스킵 2, 사전 존재하던 Windows 환경변수 길이 오류 2건은 `tests/test_pdf_extraction.py` 소관)·`pip check`·135개 검색 청크 규격 검사 통과
