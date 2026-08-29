@@ -32,7 +32,12 @@ from src.retrieval.dense import (
     SentenceTransformerEmbedding,
 )
 from src.retrieval.hybrid import HybridRetriever, Member
-from src.retrieval.retriever import BM25Retriever, Retriever, load_chunks
+from src.retrieval.retriever import (
+    _WORD_RE,
+    BM25Retriever,
+    Retriever,
+    load_chunks,
+)
 
 DEFAULT_MODEL = "nlpai-lab/KURE-v1"
 DEFAULT_INDEX = Path("data/index/chroma_kurev1_1024")
@@ -66,6 +71,7 @@ class Corpus:
     dense_weight: float = 1.0
     exclude_titles: tuple[str, ...] = ()
     status: str = "current"
+    include_ids: tuple[str, ...] = ()   # 이 article_id 만 (안내 주제 한정에 쓴다)
 
     def where(self) -> dict:
         """이 묶음만 남기는 메타데이터 필터.
@@ -82,6 +88,8 @@ class Corpus:
             conditions.append({"status": self.status})
         if self.exclude_titles:
             conditions.append({"title": {"$nin": list(self.exclude_titles)}})
+        if self.include_ids:
+            conditions.append({"article_id": {"$in": list(self.include_ids)}})
         return conditions[0] if len(conditions) == 1 else {"$and": conditions}
 
 
@@ -137,6 +145,63 @@ def route_law_corpus(question: str, base: Corpus = LAW) -> Corpus:
     if mentions_commercial(question):
         return replace(base, exclude_titles=())
     return replace(base, exclude_titles=COMMERCIAL_LAWS)
+
+
+@dataclass(frozen=True)
+class GuideTopic:
+    """안내 문서 하나와 그 문서를 부르는 질문의 신호어.
+
+    안내는 법령·판례와 달리 **질문이 그 주제일 때만** 내보낸다. 전체 안내가
+    6청크뿐이라 아무 질문에나 검색하면 항상 상위 몇 건이 나온다. 임계 유사도로
+    거르는 방법도 있지만 문서 2건·표본 5개로 문턱을 정하면 그 표본에 맞춘 값이
+    된다. 지금 단계에서는 재현 가능한 주제 조건이 안전하다.
+    """
+
+    name: str
+    guide_id: str
+    signals: tuple[str, ...]
+
+
+GUIDE_TOPICS: tuple[GuideTopic, ...] = (
+    GuideTopic(
+        "보증보험",
+        "guide-HUG-전세보증금반환보증",
+        ("전세보증", "반환보증", "보증보험", "HUG", "hug", "주택도시보증",
+         "보증 가입", "보증가입", "보증료", "보증 신청", "보증신청", "보증한도"),
+    ),
+    GuideTopic(
+        "미납국세",
+        "guide-국세청-미납국세열람",
+        ("미납국세", "미납 국세", "체납", "국세 열람", "국세열람", "세금을 안 낸",
+         "세금 안 낸", "임대인 세금", "집주인 세금", "세금 체납", "납세증명"),
+    ),
+)
+
+# 두 번째 청크를 넣을지 볼 때 무시하는 낱말. 어디에나 나와서 신호가 되지 못한다.
+_COMMON = frozenset({"경우", "해당", "가능", "신청", "안내", "확인", "필요", "내용", "제도"})
+
+
+def detect_guide_topics(question: str) -> tuple[GuideTopic, ...]:
+    """질문이 어느 안내 주제인지. 해당 없으면 빈 튜플."""
+    return tuple(
+        topic
+        for topic in GUIDE_TOPICS
+        if any(signal in question for signal in topic.signals)
+    )
+
+
+def _shares_query_terms(text: str, question: str) -> bool:
+    """청크가 질문의 낱말을 직접 담고 있는지.
+
+    순위가 2위라는 이유만으로 두 번째 청크를 넣지 않는다. 질문의 핵심어를 실제로
+    담고 있을 때만 넣는다.
+    """
+    words = {
+        w
+        for w in _WORD_RE.findall(question)
+        if len(w) >= 2 and w not in _COMMON
+    }
+    return any(word in text for word in words)
 
 
 @dataclass(frozen=True)
@@ -358,8 +423,46 @@ class RetrievalService:
             question=question,
             laws=self._search_one(route_law_corpus(question, law), question, k_law),
             cases=self._search_one(case, question, k_case),
-            guides=self._search_one(guide, question, k_guide),
+            guides=self._search_guides(guide, question, k_guide),
         )
+
+    def _search_guides(
+        self, corpus: Corpus, question: str, limit: int
+    ) -> list[Evidence]:
+        """안내는 질문이 그 주제일 때만, 0~limit 건을 가변으로 낸다.
+
+        법령·판례처럼 고정 개수로 내보내면 관련 없는 질문에도 항상 따라붙는다.
+        안내가 6청크뿐이라 어떤 질문에도 상위 몇 건이 나오기 때문이다.
+
+        규칙:
+          주제 없음        -> 0건
+          주제 하나        -> 가장 관련 있는 1건. 두 번째는 질문의 낱말을 직접
+                              담고 있을 때만 넣는다(순위 2위라는 이유만으로는 안 넣음)
+          주제 둘          -> 각 주제에서 1건씩
+        """
+        topics = detect_guide_topics(question)
+        if not topics or limit <= 0:
+            return []
+
+        if len(topics) == 1:
+            found = self._search_one(
+                replace(corpus, include_ids=(topics[0].guide_id,)), question, min(2, limit)
+            )
+            if len(found) > 1 and not _shares_query_terms(found[1].text, question):
+                found = found[:1]
+            return found[:limit]
+
+        picked: list[Evidence] = []
+        for topic in topics[:limit]:
+            hit = self._search_one(
+                replace(corpus, include_ids=(topic.guide_id,)), question, 1
+            )
+            picked.extend(hit)
+        # 순위는 묶음 안에서 다시 매긴다.
+        return [
+            Evidence(i, e.chunk_id, e.doc_type, e.citation, e.text, e.score, e.source_url)
+            for i, e in enumerate(picked[:limit], start=1)
+        ]
 
 
 def _load_all(paths: tuple[Path | str, ...]) -> list[dict]:
