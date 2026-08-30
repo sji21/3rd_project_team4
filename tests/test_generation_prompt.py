@@ -32,6 +32,49 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("지어내지", text)
         self.assertIn("확인할 수 없습니다", text)
 
+    def test_defines_role_and_target_user(self) -> None:
+        text = prompt_module.SYSTEM_QA
+
+        self.assertIn("대한민국 주택임대차 법령 안내 도우미", text)
+        self.assertIn("법률 전문가가 아닌", text)
+        self.assertIn("예비 세입자", text)
+        self.assertIn("현재 세입자", text)
+        self.assertIn("짧은 일상어 풀이", text)
+
+    def test_uses_only_directly_relevant_evidence(self) -> None:
+        self.assertIn("질문과 직접 관련 없는", prompt_module.SYSTEM_QA)
+
+    def test_accuracy_has_priority_over_plain_language(self) -> None:
+        text = prompt_module.SYSTEM_QA
+
+        self.assertIn("정확성과 쉬운 표현이 충돌하면", text)
+        self.assertIn("항상 정확성을 우선", text)
+
+    def test_plain_language_must_preserve_legal_meaning(self) -> None:
+        text = prompt_module.SYSTEM_QA
+
+        for phrase in ("결론", "조건", "예외", "부정 표현", "주체", "시점", "숫자의 역할"):
+            self.assertIn(phrase, text)
+
+    def test_legal_term_is_kept_and_glossed(self) -> None:
+        text = prompt_module.SYSTEM_QA
+
+        self.assertIn("용어 자체를 없애거나 다른 말로 바꾸지 말고", text)
+        self.assertIn("대항력(", text)
+
+    def test_forbids_stronger_conclusion_or_new_advice(self) -> None:
+        text = prompt_module.SYSTEM_QA
+
+        self.assertIn("뒷받침하는 수준보다 강한 결론", text)
+        self.assertIn("조언·사례·위험도 판단", text)
+
+    def test_preserves_numeric_meaning_and_role(self) -> None:
+        text = prompt_module.SYSTEM_QA
+
+        self.assertIn("대상·조건·역할", text)
+        self.assertIn("임차인의 보증금 범위", text)
+        self.assertIn("우선변제받는 보증금 중 일정액", text)
+
     def test_requires_named_citations_not_numbers(self) -> None:
         """번호 인용을 시키면 안 된다.
 
@@ -41,6 +84,7 @@ class SystemPromptTests(unittest.TestCase):
         text = prompt_module.SYSTEM_QA
 
         self.assertIn("번호가 아니라 이름으로", text)
+        self.assertIn("최소 1개 반드시", text)
         self.assertIn("법원과 사건번호", text)
 
     def test_requires_verbatim_dates_and_amounts(self) -> None:
