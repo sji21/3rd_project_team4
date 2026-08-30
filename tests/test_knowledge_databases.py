@@ -116,7 +116,7 @@ def test_initializes_expected_schema_idempotently(tmp_path: Path) -> None:
     first = initialize_relational_database(path)
     second = initialize_relational_database(path)
 
-    assert first.schema_version == second.schema_version == 1
+    assert first.schema_version == second.schema_version == 2
     assert EXPECTED_TABLES.issubset(first.tables)
 
 

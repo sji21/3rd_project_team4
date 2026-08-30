@@ -29,7 +29,7 @@ def make_record(**overrides: str) -> CaseRecord:
         "case_name": "임대차보증금반환",
         "holding": "대항력을 갖춘 임차인의 보증금반환청구권을 판단했다.",
         "summary": "대항력을 갖춘 임차인의 보증금반환청구권을 판단했다.",
-        "full_text": "대항력을 갖춘 임차인의 보증금반환청구권을 판단했다.",
+        "full_text": "대항력을 갖춘 임차인의 보증금반환청구권을 판단한 공식 판례 전문이다.",
         "source_url": "https://www.law.go.kr/LSW/precInfoP.do?evtNo=2024다12345",
         "collected_at": "2026-08-28",
         "file_path": "cases/CASE-TEST-1.md",
@@ -73,6 +73,8 @@ def test_case_ingestion_leaves_law_citations_empty_and_exports_common_schema():
         assert chunk["metadata"]["doc_type"] == "case"
         assert chunk["metadata"]["case_number"] == "2024다12345"
         assert chunk["metadata"]["article_id"] == "CASE-TEST-1"
+        assert "공식 판례 전문" not in chunk["text"]
+        assert chunk["text"].endswith(make_record().holding)
         report = Report()
         check_structure([chunk], report)
         assert report.errors == []
@@ -85,8 +87,27 @@ def test_case_ingestion_is_idempotent():
         initialize_relational_database(database)
         with closing(connect_database(database)) as connection:
             load_case_records([make_record()], connection)
-            load_case_records([make_record(full_text="수정된 판결요지")], connection)
+            load_case_records([make_record(holding="수정된 판결요지", summary="수정된 판결요지")], connection)
             assert connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 1
             assert connection.execute("SELECT content FROM chunks").fetchone()[0].endswith("수정된 판결요지")
+        gc.collect()
+
+
+def test_case_ingestion_allows_same_case_number_for_distinct_cases():
+    with TemporaryDirectory() as temp:
+        database = Path(temp) / "knowledge.sqlite3"
+        initialize_relational_database(database)
+        second = make_record(
+            case_id="CASE-TEST-2",
+            court_name="서울고등법원",
+            case_name="별도 임대차보증금반환",
+            source_url="https://www.law.go.kr/LSW/precInfoP.do?evtNo=2024다12345-2",
+        )
+        with closing(connect_database(database)) as connection:
+            summary = load_case_records([make_record(), second], connection)
+            assert summary.cases == 2
+            assert connection.execute(
+                "SELECT COUNT(*) FROM cases WHERE case_number = '2024다12345'"
+            ).fetchone()[0] == 2
         gc.collect()
