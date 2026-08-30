@@ -1,4 +1,4 @@
-# 공식 주택임대차 판례 데이터 스테이징·최신 main 호환 보고서
+# 공식 주택임대차 판례 데이터 스테이징·리뷰 후 재검증 보고서
 
 ## 기준과 범위
 
@@ -9,21 +9,59 @@
 - 청크 규칙: 판례 1건 = 청크 1개
 - 원천·SQLite·청크·Chroma는 `.gitignore` 대상이며, 이 문서는 데이터 자체가 아닌 재현·검증 상태를 기록한다.
 
-## 현재 로컬 스테이징 산출물
+## 검토 전 로컬 스테이징 기준선
 
 | 항목 | 실제 수량 | 경로 |
 | --- | ---: | --- |
 | 최종 공식 후보 목록 | 348건 | `data/raw/final_phase_official_case_candidates.jsonl` |
 | 공식 상세 응답 | 517건 | `data/raw/phase1_official_case_details.jsonl` |
-| 표준 적재 대상 `CaseRecord` | 207건 | `data/parsed/case_records.jsonl` |
+| 표준 적재 대상 `CaseRecord` | 207건 | `data/parsed/case_records.jsonl` (검토 전 기준선) |
 | 스테이징 SQLite 판례 | 207건 | `data/database/phase1_official_cases.sqlite3` |
 | 검색용 판례 청크 | 207건 | `data/chunks/phase1_official_cases.jsonl` |
 | 스테이징 Chroma 벡터 | 207건 | `data/index/phase1_official_cases_kurev1_1024/` |
 
 SQLite를 읽기 전용으로 점검한 결과, 사건번호 중복은 0건이며 207건 모두 정확히 하나의
 `case:{case_id}#0` 청크를 갖는다. 따라서 기존 프로젝트의 **판례 1건 = 청크 1개** 규칙은 유지된다.
-`case_records.jsonl`은 517건 공식 상세 응답을 다시 변환해도 기존
-`phase1_official_case_records.jsonl`의 207건과 사건 ID 집합이 동일함을 확인했다.
+위 207건은 넓은 키워드 범위·사건번호 단독 중복 제거·판결요지의 `full_text` 사용 정책으로
+만든 **검토 전 기준선**이다. 리뷰 후 변환 계약의 성공 건수나 운영 적재 대상으로 사용하지 않는다.
+
+## 리뷰 후 안전 변환 재검증
+
+2026-08-30에 `phase1_official_case_details.jsonl`을 새 변환기로 검사했다. 원천 SHA-256은
+`66f9f5fe57fb4f3903906c89d7ee371a3739d6a0b5aaee384da5c049681c81e1`이며, 결과는 아래와 같다.
+
+| 항목 | 건수 | 처리 |
+| --- | ---: | --- |
+| 입력 | 517 | 전체 검사 |
+| 자동 적재 후보 | 42 | 출력 보류 |
+| 범위·수동·짧은 요지 제외 | 64 | `excluded` 보고 |
+| API/필수 필드 오류 | 269 | `errors` 보고, 종료 코드 1 |
+| 적용 법령 불명확 | 142 | `needs_review` 보고 |
+| 사건번호 동일성 충돌 | 0 | `conflicts` 보고 |
+
+오류가 있으므로 `data/parsed/case_records.reviewed.jsonl`은 생성하지 않았고, 기존
+`data/parsed/case_records.jsonl`도 변경하지 않았다. 세부 사유와 판례 ID는 Git 제외 경로의
+`data/parsed/case_records.reviewed.report.json` 및
+`data/parsed/case_records.reviewed.manifest.json`에서 확인한다. 운영 적재 전에는 오류 269건의
+상세 API 응답을 재수집·보정하고, 수동 검토 142건의 포함 여부를 확정해야 한다.
+
+공개 상세 페이지 재조회 표본 20건은 모두 국가법령정보센터 판례 상세가 아닌
+국세법령정보시스템 페이지로 이동해 원문을 돌려주지 않았다. 또한 판결요지 누락 표본은
+공개 상세 페이지의 `판시사항`·`전문`은 존재해도 공식 `판결요지` 항목 자체가 없었다.
+따라서 `판시사항`을 판결요지로 대체하지 않으며, 보고서의 `error_records` 원천 URL 목록으로
+정상 국가법령정보 공동활용 API 응답을 다시 수집해야 한다.
+
+## 공개 API 검증 원천 재구축
+
+검토 후에는 기존 상세 응답을 신뢰하지 않고, 최종 후보 348건을 국가법령정보 공동활용 API에
+직접 재요청했다. `판결요지`·전문·기본 메타데이터를 모두 반환한 154건만
+`phase1_official_case_details.verified.jsonl`에 기록했다. 나머지 194건은 수집 불가 보고서에
+분리했다(판결요지 미제공 120건, 판례 상세 응답 미반환 74건).
+
+검증 원천 154건을 엄격 변환한 결과는 자동 적재 13건·범위 제외 68건·수동 검토 73건·오류
+0건·충돌 0건이다. 따라서 `case_records.verified.jsonl` 13건은 안전하게 발행됐고, 별도
+스테이징 SQLite와 청크도 각각 13건으로 적재·규격 검사를 통과했다. 이 결과는 과거 207건을
+대체하는 현재의 **공개 API 검증 기준선**이며, 운영 통합 DB에는 아직 반영하지 않았다.
 
 ## 최신 main과의 호환성
 
@@ -39,7 +77,7 @@ SQLite를 읽기 전용으로 점검한 결과, 사건번호 중복은 0건이�
 
 ## 아직 운영 통합이 아닌 이유
 
-현재 `data/database/knowledge.sqlite3`에는 법령·판례·청크가 모두 0건이다. 207건은
+현재 `data/database/knowledge.sqlite3`에는 법령·판례·청크가 모두 0건이다. 검토 전 207건은
 `phase1_official_cases.sqlite3`와 별도 스테이징 Chroma에만 있다. 즉 최신 검색·생성 코드와
 형식은 맞지만, 기본 경로의 운영 통합 SQLite/Chroma에는 아직 동기화하지 않았다.
 
@@ -73,5 +111,6 @@ python -m src.retrieval.index `
 
 최신 main에 맞추기 위해 DB 스키마나 검색·생성 코드를 변경할 필요는 없었다. 다만 공식
 상세 원천을 표준 입력으로 재생성할 수 있도록 `src.ingestion.parse_cases`를 추가했다. 이
-변환기는 수동 범위 제외 3건과 중복 사건번호를 같은 규칙으로 처리해 207건을 재현한다.
+변환기는 오류·제외·수동 검토·충돌을 분리하고, 오류가 있으면 기존 결과물을 보호한다.
+따라서 오류가 해소되고 수동 검토가 확정된 뒤에만 새 공식 적재 건수를 확정할 수 있다.
 원격 main에는 이 작업으로 인한 변경이나 푸시를 하지 않는다.

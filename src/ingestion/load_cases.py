@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -29,8 +31,8 @@ _SPACE = re.compile(r"\s+")
 class CaseRecord:
     """판례 한 건의 서비스용 원천 레코드.
 
-    ``summary``와 ``full_text``는 현재 보유한 판결요지 기반 텍스트를 담는다.
-    원문 전문을 확보하면 같은 식별자로 교체해 재적재할 수 있다.
+    ``holding``·``summary``는 공식 판결요지이고, ``full_text``는 국가법령정보센터
+    공식 판례 전문이다. 검색 청크에는 짧은 공식 판결요지만 사용한다.
     """
 
     case_id: str
@@ -53,7 +55,7 @@ class CaseRecord:
         problems: list[str] = []
         for name in (
             "case_id", "case_number", "court_name", "decision_date", "case_type",
-            "case_name", "full_text", "source_url", "collected_at",
+            "case_name", "holding", "summary", "full_text", "source_url", "collected_at",
         ):
             if not str(getattr(self, name)).strip():
                 problems.append(f"{name} 이 비어 있음")
@@ -91,7 +93,7 @@ def token_count_of(text: str) -> int:
 
 
 def chunk_body(record: CaseRecord) -> str:
-    return f"[{record.court_name} {record.case_number} {record.case_name}]\n{record.full_text.strip()}"
+    return f"[{record.court_name} {record.case_number} {record.case_name}]\n{record.holding.strip()}"
 
 
 def load_case_records(records: list[CaseRecord], connection: sqlite3.Connection) -> CaseLoadSummary:
@@ -256,10 +258,18 @@ def read_case_records(path: Path) -> list[CaseRecord]:
 
 
 def write_case_records(records: list[CaseRecord], path: Path) -> None:
+    """완전한 JSONL을 만든 뒤에만 대상 파일을 교체한다."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+        os.replace(temporary_name, path)
+    except BaseException:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
 
 
 def main() -> int:

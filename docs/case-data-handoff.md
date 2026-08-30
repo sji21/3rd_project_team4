@@ -17,18 +17,25 @@ Git 제외 대상이고, 아래 코드는 커밋해 팀원이 같은 원천으�
   → data/index/chroma_kurev1_1024 / knowledge_chunks
 ```
 
-판례는 현재 **판결요지 하나를 한 건의 단일 청크**로 쓴다. `parse_cases`는 국가법령
-정보센터 상세 응답의 `판결요지`를 `holding`·`summary`·`full_text`로 동일하게 넣고,
-짧은 요지·공식 상세 본문 누락을 제외한다. 1차 수동 범위 검토에서 제외한 명시적 상가
-사건 3건도 기본적으로 제외한다. 같은 사건번호가 여러 공개 식별자(`precSeq`)로 나오면
-큰 식별자 하나만 남긴다. 판결 전문을 합치거나 여러 청크로 나누려면 별도 평가를 거쳐야 한다.
+판례는 현재 **판결요지 하나를 한 건의 단일 검색 청크**로 쓴다. `parse_cases`는 국가법령
+정보센터 상세 응답의 `판결요지`를 `holding`·`summary`에, `판례내용` 전문을 `full_text`에
+각각 보존한다. 따라서 전문을 여러 청크로 나누지는 않지만 원천 전문은 SQLite에 남는다.
+
+변환은 다음 계약을 지킨다.
+
+- JSON·API 구조·필수 필드 오류 또는 사건번호 충돌이 하나라도 있으면 종료 코드 1이며 기존 출력은 유지한다.
+- 범위 밖·수동 제외·짧은 요지는 `excluded`, 적용 법령이 불명확한 사건은 `needs_review`로 분리한다.
+- 자동 적재는 주택임대차보호법 적용·참조 근거가 확인된 사건만 허용한다. 상가·점포·권리금 신호는 제외하고, 주택·상가 신호가 함께 있으면 수동 검토한다.
+- 같은 사건번호는 법원명·선고일·사건명·공식 전문 체크섬까지 같을 때만 동일 공개본으로 처리한다. 하나라도 다르면 충돌로 종료한다.
 
 ```powershell
 # 1. 공식 원천 → 표준 판례 JSONL
 python -m src.ingestion.parse_cases `
   --input data/raw/case_details.jsonl `
   --output data/parsed/case_records.jsonl `
-  --collected-at 2026-08-30T00:00:00Z
+  --collected-at 2026-08-30T00:00:00Z `
+  --report data/parsed/case_records.report.json `
+  --manifest data/parsed/case_records.manifest.json
 
 # 2. 표준 판례 JSONL → 공통 SQLite + 판례 청크
 python -m src.ingestion.load_cases `
@@ -42,6 +49,69 @@ python -m src.retrieval.index `
   --chunks data/chunks/cases.jsonl `
   --path data/index/chroma_kurev1_1024
 ```
+
+Windows CP949 기본 환경에서는 Python을 UTF-8 모드로 실행한다.
+
+```powershell
+$env:PYTHONUTF8 = "1"
+```
+
+공개 API 재수집 명령은 저장소 루트의 `.env`에 있는 `LAW_OPEN_API_OC`를 사용한다.
+예제 파일을 복사한 뒤 값을 채우고, 다른 위치에 비밀 파일을 둘 필요가 없다.
+
+### 잘못된 판례 일련번호 복구
+
+상세 API가 `PrecService` 대신 다른 응답을 반환하면 기존 `case_id`를 추정으로 바꾸지
+않는다. `src.ingestion.resolve_case_ids`가 후보의 사건번호·법원·선고일과 목록 API 결과가
+**모두 정확히 일치**할 때만 정식 `판례일련번호`를 매핑한다. 매핑 결과가 있을 때에만
+`src.ingestion.refetch_case_details --id-mapping`으로 별도 원천 사본을 재수집한다.
+
+```powershell
+python -m src.ingestion.resolve_case_ids `
+  --candidates data/raw/phase1_official_case_candidates.jsonl `
+               data/raw/phase1_official_case_candidates_expanded.jsonl `
+               data/raw/phase1_official_case_candidates_gap_fill.jsonl `
+               data/raw/final_phase_official_case_candidates.jsonl `
+  --error-report data/parsed/case_records.reviewed.report.json `
+  --output data/raw/case_id_mapping.json `
+  --report data/raw/case_id_resolution.report.json `
+  --oc-env-file .env
+
+python -m src.ingestion.refetch_case_details `
+  --input data/raw/phase1_official_case_details.jsonl `
+  --output data/raw/phase1_official_case_details.refetched.jsonl `
+  --report data/raw/phase1_official_case_details.refetched.report.json `
+  --id-mapping data/raw/case_id_mapping.json `
+  --oc-env-file .env
+```
+
+### 공개 API 검증 원천 재생성
+
+과거 원천의 누락 오류를 그대로 변환하지 않고, 후보 ID 각각을 공식 상세 API에서 다시
+검증해 필수 필드가 완전한 응답만 새 원천에 쓴다.
+
+```powershell
+python -m src.ingestion.build_verified_case_source `
+  --candidates data/raw/final_phase_official_case_candidates.jsonl `
+  --output data/raw/phase1_official_case_details.verified.jsonl `
+  --report data/raw/phase1_official_case_details.verified.report.json `
+  --oc-env-file .env
+```
+
+## 재현 증빙
+
+원천과 파생 데이터는 Git 제외 대상이므로, 변환을 실행한 담당자는 아래 파일을 함께
+전달하거나 팀 공유 저장소에 보관한다.
+
+- 원천 상세 응답 JSONL의 전달 위치와 SHA-256
+- 생성된 `case_records.jsonl`의 SHA-256
+- `case_records.manifest.json`의 판례 ID 목록·입력/출력 해시
+- `case_records.report.json`의 입력 건수, 제외·오류·수동 검토·충돌 건수와 사유별 건수. `error_records`에는 재수집 대상의 줄 번호·판례 ID·원천 URL·누락 필드가 구조화되어 있다.
+
+검토자가 실제 API 원천 없이도 규칙을 확인할 수 있도록
+`tests/fixtures/case_details_sample.jsonl`에 주택 포함·상가 제외·수동 검토 사례를 둔다.
+실제 변환 결과의 건수는 이 강화된 규칙으로 매번 다시 산출하며, 과거 207건 수치를
+성공 조건으로 고정하지 않는다.
 
 3단계의 오래된 벡터 삭제 범위는 `doc_type=case`뿐이다. 같은 Chroma 컬렉션의 법령과
 공식 안내 벡터는 삭제하지 않는다.
