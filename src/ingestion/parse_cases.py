@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 from src.ingestion.load_cases import CaseRecord, checksum_of, write_case_records
 
@@ -30,6 +31,7 @@ LEGACY_HOUSING_SIGNALS = re.compile(
     r"확정일자|전입|주민등록|임차권"
 )
 DEFAULT_EXCLUDED_CASE_IDS = frozenset({"216659", "240969", "619451"})
+REVIEW_DECISIONS = frozenset({"approved", "rejected", "pending"})
 
 
 def clean(value: object) -> str:
@@ -47,6 +49,37 @@ def date_of(value: object) -> str:
         return ""
     digits = matched.group(0)
     return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+
+
+@dataclass(frozen=True)
+class ReviewClassification:
+    decision: Literal["approved", "rejected", "pending"]
+    basis: str
+
+
+def load_review_classifications(path: Path) -> dict[str, ReviewClassification]:
+    """수동 검토 CSV의 사건번호별 승인·제외·보류 결정을 읽는다."""
+
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {"case_number", "review_decision", "review_basis"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            missing = ", ".join(sorted(required.difference(reader.fieldnames or [])))
+            raise ValueError(f"수동 검토 CSV 필수 열이 없습니다: {missing}")
+        classifications: dict[str, ReviewClassification] = {}
+        for lineno, row in enumerate(reader, 2):
+            case_number = clean(row.get("case_number"))
+            decision = clean(row.get("review_decision")).lower()
+            basis = clean(row.get("review_basis"))
+            if not case_number:
+                raise ValueError(f"수동 검토 CSV {lineno}번째 줄의 case_number가 비어 있음")
+            if decision not in REVIEW_DECISIONS:
+                raise ValueError(f"수동 검토 CSV {lineno}번째 줄의 review_decision이 허용값이 아님: {decision}")
+            classification = ReviewClassification(decision=decision, basis=basis)
+            previous = classifications.setdefault(case_number, classification)
+            if previous != classification:
+                raise ValueError(f"수동 검토 CSV의 사건번호 결정이 충돌함: {case_number}")
+    return classifications
 
 
 @dataclass
@@ -191,7 +224,7 @@ def record_identity(record: CaseRecord) -> tuple[str, str, str, str, str]:
 
 def parse_raw_lines(
     lines: list[str], *, collected_at: str, source_label: str, min_holding_length: int = 30,
-    include_all: bool = False,
+    include_all: bool = False, review_classifications: Mapping[str, ReviewClassification] | None = None,
 ) -> tuple[list[CaseRecord], ParseSummary]:
     """원천 줄을 검사하고, 오류·제외·검토 대상을 분리해 반환한다."""
 
@@ -243,8 +276,16 @@ def parse_raw_lines(
                 summary.excluded.append(f"{lineno}번째 줄 {record.case_id}: {reason}")
                 continue
             if decision == "review":
-                summary.needs_review.append(f"{lineno}번째 줄 {record.case_id}: {reason}")
-                continue
+                classification = (review_classifications or {}).get(record.case_number)
+                if classification is None or classification.decision == "pending":
+                    suffix = f" ({classification.basis})" if classification and classification.basis else ""
+                    summary.needs_review.append(f"{lineno}번째 줄 {record.case_id}: {reason}{suffix}")
+                    continue
+                if classification.decision == "rejected":
+                    suffix = f": {classification.basis}" if classification.basis else ""
+                    summary.excluded.append(f"{lineno}번째 줄 {record.case_id}: 수동 검토 제외{suffix}")
+                    continue
+                reason = f"수동 검토 승인{': ' + classification.basis if classification.basis else ''}"
 
         existing = by_case_id.get(record.case_id)
         if existing:
@@ -337,6 +378,7 @@ def write_conversion_metadata(
 def convert_file(
     *, input_path: Path, output_path: Path, collected_at: str, source_label: str,
     min_holding_length: int, include_all: bool, report_path: Path, manifest_path: Path,
+    review_classifications: Mapping[str, ReviewClassification] | None = None,
 ) -> tuple[int, ParseSummary]:
     """원천을 변환한다. 실패 시 기존 ``output_path``를 절대 변경하지 않는다."""
 
@@ -346,6 +388,7 @@ def convert_file(
         source_label=source_label,
         min_holding_length=min_holding_length,
         include_all=include_all,
+        review_classifications=review_classifications,
     )
     if not summary.records:
         summary.errors.append("유효한 자동 적재 판례가 0건")
@@ -370,6 +413,7 @@ def main() -> int:
     parser.add_argument("--source-label", default=None, help="레코드 file_path에 남길 원천 경로")
     parser.add_argument("--min-holding-length", type=int, default=30)
     parser.add_argument("--include-all", action="store_true", help="범위 및 수동 제외 규칙을 적용하지 않는다.")
+    parser.add_argument("--review-classification", default=None, help="수동 판례 범위 검토 CSV 경로")
     parser.add_argument("--report", default=None, help="제외·오류·검토 사유 보고서 JSON 경로")
     parser.add_argument("--manifest", default=None, help="입력·출력 SHA-256과 case_id manifest 경로")
     args = parser.parse_args()
@@ -384,6 +428,14 @@ def main() -> int:
         return 1
 
     source_label = args.source_label or input_path.as_posix()
+    try:
+        review_classifications = (
+            load_review_classifications(Path(args.review_classification))
+            if args.review_classification else None
+        )
+    except (OSError, ValueError) as error:
+        print(f"수동 검토 CSV를 읽을 수 없습니다: {error}")
+        return 1
     report_path = Path(args.report) if args.report else output_path.with_suffix(".report.json")
     manifest_path = Path(args.manifest) if args.manifest else output_path.with_suffix(".manifest.json")
     code, summary = convert_file(
@@ -395,6 +447,7 @@ def main() -> int:
         include_all=args.include_all,
         report_path=report_path,
         manifest_path=manifest_path,
+        review_classifications=review_classifications,
     )
     print(f"  표준 판례 레코드: {output_path} ({summary.records}건)")
     print("  결과: " + " · ".join(f"{key} {value}건" for key, value in summary.counts().items()))

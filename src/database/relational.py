@@ -105,6 +105,7 @@ def _migrate_case_number_uniqueness(connection: sqlite3.Connection) -> None:
                 DROP TABLE cases;
                 ALTER TABLE cases_rebuilt RENAME TO cases;
                 CREATE INDEX idx_cases_case_number ON cases(case_number);
+                CREATE INDEX idx_cases_decision_date ON cases(decision_date);
                 COMMIT;
                 """
             )

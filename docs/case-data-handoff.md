@@ -3,14 +3,14 @@
 ## 공식 판례 표준 적재 흐름
 
 법령의 `law_records.jsonl`과 같은 역할을 하는 판례 표준 입력은
-`data/parsed/case_records.jsonl`이다. 원천 상세 응답, SQLite, 청크, Chroma는 모두
+`data/parsed/case_records.verified.jsonl`이다. 원천 상세 응답, SQLite, 청크, Chroma는 모두
 Git 제외 대상이고, 아래 코드는 커밋해 팀원이 같은 원천으로 재생성한다.
 
 ```text
 공식 판례 상세 원천 JSONL
-  → data/raw/case_details.jsonl
+  → data/raw/phase1_official_case_details.verified.jsonl
   → src.ingestion.parse_cases
-  → data/parsed/case_records.jsonl
+  → data/parsed/case_records.verified.jsonl
   → src.ingestion.load_cases
   → data/database/knowledge.sqlite3 + data/chunks/cases.jsonl
   → src.retrieval.index
@@ -21,25 +21,27 @@ Git 제외 대상이고, 아래 코드는 커밋해 팀원이 같은 원천으�
 정보센터 상세 응답의 `판결요지`를 `holding`·`summary`에, `판례내용` 전문을 `full_text`에
 각각 보존한다. 따라서 전문을 여러 청크로 나누지는 않지만 원천 전문은 SQLite에 남는다.
 
-변환은 다음 계약을 지킨다.
+PATCH-023의 리뷰 보완 변환은 다음 계약을 지킨다.
 
 - JSON·API 구조·필수 필드 오류 또는 사건번호 충돌이 하나라도 있으면 종료 코드 1이며 기존 출력은 유지한다.
 - 범위 밖·수동 제외·짧은 요지는 `excluded`, 적용 법령이 불명확한 사건은 `needs_review`로 분리한다.
 - 자동 적재는 주택임대차보호법 적용·참조 근거가 확인된 사건만 허용한다. 상가·점포·권리금 신호는 제외하고, 주택·상가 신호가 함께 있으면 수동 검토한다.
 - 같은 사건번호는 법원명·선고일·사건명·공식 전문 체크섬까지 같을 때만 동일 공개본으로 처리한다. 하나라도 다르면 충돌로 종료한다.
+- 수동 분류 CSV는 기본 수동 검토 사건에만 적용한다. `approved`만 후보에 포함하고, `rejected`는 제외하며, `pending` 또는 미분류 사건은 계속 `needs_review`로 남긴다.
 
 ```powershell
 # 1. 공식 원천 → 표준 판례 JSONL
 python -m src.ingestion.parse_cases `
-  --input data/raw/case_details.jsonl `
-  --output data/parsed/case_records.jsonl `
+  --input data/raw/phase1_official_case_details.verified.jsonl `
+  --output data/parsed/case_records.verified.jsonl `
   --collected-at 2026-08-30T00:00:00Z `
-  --report data/parsed/case_records.report.json `
-  --manifest data/parsed/case_records.manifest.json
+  --report data/parsed/case_records.verified.report.json `
+  --manifest data/parsed/case_records.verified.manifest.json `
+  --review-classification data/parsed/case_records.residential_review_classification.csv
 
 # 2. 표준 판례 JSONL → 공통 SQLite + 판례 청크
 python -m src.ingestion.load_cases `
-  --records data/parsed/case_records.jsonl `
+  --records data/parsed/case_records.verified.jsonl `
   --database data/database/knowledge.sqlite3 `
   --export data/chunks/cases.jsonl
 
@@ -98,15 +100,19 @@ python -m src.ingestion.build_verified_case_source `
   --oc-env-file .env
 ```
 
+후보 수와 성공 수가 같고 수집 불가가 0건일 때만 위 명령이 기존 원천 JSONL을 교체한다. 한 건이라도
+실패하면 기존 원천은 보존하고, 보고서에 `published: false`와 수집 불가 사유를 남긴 뒤 종료 코드 1로
+끝난다.
+
 ## 재현 증빙
 
 원천과 파생 데이터는 Git 제외 대상이므로, 변환을 실행한 담당자는 아래 파일을 함께
 전달하거나 팀 공유 저장소에 보관한다.
 
 - 원천 상세 응답 JSONL의 전달 위치와 SHA-256
-- 생성된 `case_records.jsonl`의 SHA-256
-- `case_records.manifest.json`의 판례 ID 목록·입력/출력 해시
-- `case_records.report.json`의 입력 건수, 제외·오류·수동 검토·충돌 건수와 사유별 건수. `error_records`에는 재수집 대상의 줄 번호·판례 ID·원천 URL·누락 필드가 구조화되어 있다.
+- 생성된 `case_records.verified.jsonl`의 SHA-256
+- `case_records.verified.manifest.json`의 판례 ID 목록·입력/출력 해시
+- `case_records.verified.report.json`의 입력 건수, 제외·오류·수동 검토·충돌 건수와 사유별 건수. `error_records`에는 재수집 대상의 줄 번호·판례 ID·원천 URL·누락 필드가 구조화되어 있다.
 
 검토자가 실제 API 원천 없이도 규칙을 확인할 수 있도록
 `tests/fixtures/case_details_sample.jsonl`에 주택 포함·상가 제외·수동 검토 사례를 둔다.
