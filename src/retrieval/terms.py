@@ -6,15 +6,17 @@
 원래 질문의 낱말은 그대로 두고 법률 용어를 **덧붙인다**. 바꿔치기하지 않는다.
 사용자가 쓴 말이 조문에 그대로 있는 경우도 많기 때문이다.
 
-작성 기준: 특정 평가 문항을 겨냥하지 않는다. 부동산·임대차에서 일상적으로 쓰이는
-말과 법령 표현의 대응을 일반적으로 적는다. 실패한 질문을 보고 거꾸로 채우면
-그 질문에만 통하는 표가 되고, 평가 수치도 부풀려진다.
+작성 기준: 공통 ``TERM_MAP``은 특정 평가 문항을 겨냥하지 않고 부동산·임대차에서
+일상적으로 쓰이는 말과 법령 표현의 대응을 일반적으로 적는다. 문맥 규칙은 생성 계약에서
+실제로 잘린 복합 근거를 보완하되, 발동 범위와 평가 한계를 문서·테스트에 함께 남긴다.
 
 한계: 표에 적힌 것만 동작한다. 일반화되지 않으므로 임베딩 검색이 들어오면
 역할이 줄어든다. 다만 놓치면 안 되는 대응은 확률에 맡기지 않고 여기에 박아 둔다.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 # 생활 용어 -> 덧붙일 법률 용어들
 TERM_MAP: dict[str, tuple[str, ...]] = {
@@ -89,6 +91,25 @@ TERM_MAP: dict[str, tuple[str, ...]] = {
     "빌라": ("주거용 건물", "주택"),
 }
 
+# 같은 낱말도 질문 의도에 따라 필요한 조문이 다르다. "확정일자는 어디서 받나요"는
+# 부여 절차를, "안 받으면 어떻게 되나요"는 우선변제 효과를 찾아야 한다. 단일 키로
+# 확장하면 절차 질문까지 우선변제 쪽으로 밀리므로 문맥 신호가 함께 있을 때만 적용한다.
+# 조문번호가 아니라 일반 법률 개념을 더해 평가 문항의 표현을 그대로 외우지 않는다.
+@dataclass(frozen=True)
+class ContextTermRule:
+    subject: str
+    signals: tuple[str, ...]
+    additions: tuple[str, ...]
+
+
+CONTEXT_TERM_RULES: tuple[ContextTermRule, ...] = (
+    ContextTermRule(
+        subject="확정일자",
+        signals=("안 받", "받지 않", "없이", "없으면", "없는", "왜 필요", "필요한 이유", "효력"),
+        additions=("우선변제권", "우선하여 변제"),
+    ),
+)
+
 
 def expand(query: str) -> list[str]:
     """질문에서 생활 용어를 찾아 덧붙일 법률 용어 목록을 돌려준다.
@@ -100,6 +121,21 @@ def expand(query: str) -> list[str]:
     for colloquial, legal in TERM_MAP.items():
         if colloquial in query:
             for term in legal:
+                if term not in found and term not in query:
+                    found.append(term)
+    return found
+
+
+def expand_law(query: str) -> list[str]:
+    """공통 생활 용어와 법령 전용 문맥 용어를 함께 돌려준다.
+
+    판례·안내 검색은 각자 평가가 필요하므로 법령 의도 보강이 번지지 않게 별도
+    진입점으로 둔다.
+    """
+    found = expand(query)
+    for rule in CONTEXT_TERM_RULES:
+        if rule.subject in query and any(signal in query for signal in rule.signals):
+            for term in rule.additions:
                 if term not in found and term not in query:
                     found.append(term)
     return found
