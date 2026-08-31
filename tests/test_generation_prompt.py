@@ -94,18 +94,19 @@ class SystemPromptTests(unittest.TestCase):
         일이 있었다. 그 사례를 프롬프트에 예시로 박아 두었고, 이 테스트는
         그 예시가 지워지지 않았는지 지킨다.
         """
-        text = prompt_module.SYSTEM_QA
+        system_text = prompt_module.SYSTEM_QA
+        final_check = prompt_module.HUMAN_QA
 
-        self.assertIn("글자 그대로", text)
-        self.assertIn("첫 문장", text)
+        self.assertIn("글자 그대로", system_text)
+        self.assertIn("첫 문장", system_text)
 
         # ★ "그 다음 날부터" 만 확인하면 안 된다. 그 문자열은 참고 자료 예시 줄에도
         #   있어서, 정작 지켜야 할 ✓/✗ 대조 예시를 지워도 테스트가 통과한다.
         #   (변이 검사에서 실제로 통과해 버리는 것을 확인하고 고쳤다.)
         #   작은 모델은 추상적 지시보다 이 대조 예시에 훨씬 잘 반응하므로
         #   두 줄이 함께 살아 있어야 한다.
-        self.assertIn('✓ "마친 그 다음 날부터 효력이 생깁니다"', text)
-        self.assertIn('✗ "마친 날부터 효력이 생깁니다"', text)
+        self.assertIn('✓ "마친 그 다음 날부터 효력이 생깁니다"', final_check)
+        self.assertIn('✗ "마친 날부터 효력이 생깁니다"', final_check)
 
     def test_conclusion_must_not_paraphrase_periods(self) -> None:
         """'결론을 먼저 요약하라'와 '그대로 옮기라'가 부딪히면 안 된다.

@@ -21,7 +21,6 @@ import logging
 import os
 import re
 import time
-import urllib.error
 import urllib.request
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -45,13 +44,16 @@ def _env_number(name: str, default: str, cast):
         return cast(default)
 
 
-LLM_BASE_URL = os.getenv("JEONSEON_LLM_BASE_URL", "http://localhost:11434/v1")
+# 원격 URL 환경변수를 사용하지 않고, 이 PC의 Ollama만 호출한다.
+LLM_BASE_URL = "http://localhost:11434/v1"
 LLM_MODEL = os.getenv("JEONSEON_LLM_MODEL", "qwen3:8b-q4_K_M")
-LLM_API_KEY = os.getenv("JEONSEON_LLM_API_KEY", "ollama")  # 호환성용. native 호출에서는 사용하지 않음.
 
-LLM_TEMPERATURE = _env_number("JEONSEON_LLM_TEMPERATURE", "0.2", float)
+# 법령의 조건·시점 표현이 매 실행마다 달라지지 않도록 기본 생성은 결정적으로 한다.
+LLM_TEMPERATURE = _env_number("JEONSEON_LLM_TEMPERATURE", "0.0", float)
 LLM_TIMEOUT = _env_number("JEONSEON_LLM_TIMEOUT", "180", float)
 LLM_MAX_TOKENS = _env_number("JEONSEON_LLM_MAX_TOKENS", "256", int)
+# 현재 RAG 프롬프트를 담으면서 KV 캐시 적재를 최소화한다.
+LLM_NUM_CTX = _env_number("JEONSEON_LLM_NUM_CTX", "4096", int)
 LLM_KEEP_ALIVE = os.getenv("JEONSEON_LLM_KEEP_ALIVE", "30m").strip() or "30m"
 
 
@@ -167,7 +169,7 @@ def _extra_body() -> dict:
     기존 테스트/호출부가 이 함수를 사용하므로 인터페이스를 유지한다.
     native API에서는 max_tokens를 options.num_predict로, think를 top-level think로 변환한다.
     """
-    body: dict = {"max_tokens": LLM_MAX_TOKENS}
+    body: dict = {"max_tokens": LLM_MAX_TOKENS, "num_ctx": LLM_NUM_CTX}
     if THINK_OFF:
         body["think"] = False
     return body
@@ -187,7 +189,7 @@ def _duration_seconds(value) -> float | None:
 # ── Ollama native 호출 ────────────────────────────────────────
 
 def _native_base_url() -> str:
-    """환경 변수의 `/v1` 유무와 관계없이 Ollama native base URL을 만든다."""
+    """로컬 Ollama native base URL을 만든다."""
     base = LLM_BASE_URL.rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3]
@@ -307,28 +309,15 @@ def _build_native_ollama(**overrides):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            detail = ""
-            try:
-                detail = error.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            raise RuntimeError(
-                f"Ollama HTTP {error.code} 호출 실패: {detail or error.reason}"
-            ) from error
-        except urllib.error.URLError as error:
-            raise RuntimeError(f"Ollama 호출 실패: {error}") from error
         except TimeoutError as error:
             logger.warning(
-                "Ollama 성능 진단: status=timeout elapsed=%.3fs "
-                "messages=%d input_chars=%d max_tokens=%d keep_alive=%s",
+                "로컬 Ollama 호출 timeout: elapsed=%.3fs max_tokens=%d",
                 time.perf_counter() - started,
-                len(messages),
-                sum(len(message.get("content", "")) for message in messages),
                 max_tokens,
-                LLM_KEEP_ALIVE,
             )
-            raise RuntimeError(f"Ollama 호출 timeout ({timeout}초)") from error
+            raise RuntimeError(f"로컬 Ollama 호출 timeout ({timeout}초)") from error
+        except OSError as error:
+            raise RuntimeError(f"로컬 Ollama 호출 실패: {error}") from error
         except ValueError as error:
             raise RuntimeError(f"Ollama 응답 JSON 해석 실패: {error}") from error
 
@@ -405,13 +394,11 @@ def probe(timeout: float = 5.0) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(tags_url, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except OSError as error:
+    except (OSError, ValueError) as error:
         return False, (
-            f"Ollama 에 연결하지 못했습니다 ({_native_base_url()}). "
+            f"로컬 Ollama 에 연결하지 못했습니다 ({_native_base_url()}). "
             f"`ollama serve` 가 떠 있는지 확인하세요. 원인: {error}"
         )
-    except ValueError as error:
-        return False, f"Ollama 응답을 해석하지 못했습니다: {error}"
 
     names = [model.get("name", "") for model in payload.get("models", [])]
     if not any(name == LLM_MODEL or name.startswith(LLM_MODEL) for name in names):

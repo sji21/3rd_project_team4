@@ -4,6 +4,7 @@ from src.generation.models import Answer
 from src.generation.validation import (
     SemanticJudgement,
     audit_answer,
+    ground_answer_conditions,
     validate_answer,
 )
 from src.retrieval.service import Evidence
@@ -74,6 +75,84 @@ class ValidationTests(unittest.TestCase):
         )
 
         self.assertIn("value", issue_kinds(answer))
+
+    def test_rejects_same_day_when_evidence_says_next_day(self):
+        ev = evidence(
+            "law-3",
+            "주택임대차보호법 제3조",
+            "주민등록을 마친 때에는 그 다음 날부터 제삼자에 대하여 효력이 생긴다.",
+        )
+        answer = Answer(
+            question="대항력은 언제 생기나요?",
+            status="answered",
+            text="",
+            raw_text=(
+                "주택임대차보호법 제3조에 따라 주민등록을 마친 날부터 "
+                "제삼자에 대해 효력이 생깁니다."
+            ),
+            laws=(ev,),
+        )
+
+        self.assertIn("condition", issue_kinds(answer))
+
+    def test_rejects_registration_requirement_when_evidence_says_without_it(self):
+        ev = evidence(
+            "law-3",
+            "주택임대차보호법 제3조",
+            "임대차는 그 등기(登記)가 없는 경우에도 주택의 인도와 주민등록을 마치면 효력이 생긴다.",
+        )
+        answer = Answer(
+            question="등기를 안 한 계약도 보호되나요?",
+            status="answered",
+            text="",
+            raw_text=(
+                "주택임대차보호법 제3조에 따르면 대항력이나 우선변제권은 "
+                "주택임대차등기를 통해 확보해야 합니다."
+            ),
+            laws=(ev,),
+        )
+
+        self.assertIn("condition", issue_kinds(answer))
+
+    def test_accepts_correct_next_day_and_no_registration_requirement(self):
+        ev = evidence(
+            "law-3",
+            "주택임대차보호법 제3조",
+            (
+                "임대차는 그 등기가 없는 경우에도 주택의 인도와 주민등록을 "
+                "마친 때에는 그 다음 날부터 효력이 생긴다."
+            ),
+        )
+        answer = Answer(
+            question="등기를 안 한 계약도 보호되나요?",
+            status="answered",
+            text="",
+            raw_text=(
+                "주택임대차보호법 제3조에 따르면 등기 없이도 주택의 인도와 "
+                "주민등록을 마친 그 다음 날부터 효력이 생깁니다."
+            ),
+            laws=(ev,),
+        )
+
+        self.assertNotIn("condition", issue_kinds(answer))
+
+    def test_grounds_only_registration_effect_timing(self):
+        ev = evidence(
+            "law-3",
+            "주택임대차보호법 제3조",
+            "주민등록을 마친 때에는 그 다음 날부터 제삼자에 대하여 효력이 생긴다.",
+        )
+        raw = (
+            "주민등록을 마친 날부터 대항력이 생깁니다. "
+            "임대차 신고는 계약을 마친 날부터 처리합니다."
+        )
+
+        grounded = ground_answer_conditions(raw, (ev,))
+
+        self.assertIn(
+            "주민등록을 마친 그 다음 날부터 대항력이 생깁니다", grounded
+        )
+        self.assertIn("계약을 마친 날부터 처리합니다", grounded)
 
     def test_accepts_equivalent_percent_expression(self):
         ev = evidence(

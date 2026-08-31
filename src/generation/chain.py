@@ -53,6 +53,7 @@ from src.generation.validation import (
     SemanticJudgement,
     audit_answer,
     build_semantic_judge_prompt,
+    ground_answer_conditions,
 )
 from src.retrieval.service import Evidence, RetrievalResult, RetrievalService
 from src.security.prompt_injection import (
@@ -477,6 +478,12 @@ def answer_question(
             cases=tuple(result.cases),
             guides=tuple(result.guides),
         )
+
+    evidences = tuple(result.laws + result.cases + result.guides)
+    grounded_text = ground_answer_conditions(raw_text, evidences)
+    if grounded_text != raw_text:
+        logger.info("검색 근거의 시점 표현으로 생성 답변의 오기를 교정했습니다.")
+        raw_text = grounded_text
 
     # 5) main Qwen이 정확성 우선 원칙과 쉬운 표현 규칙을 함께 적용해
     # 사용자에게 보낼 최종 본문을 직접 만든다. 별도 재작성 Qwen은 호출하지 않는다.

@@ -21,6 +21,7 @@ IDF 가 코퍼스 전체 기준이라 "대항력"의 희소성이 법령 133 조
 
 from __future__ import annotations
 
+import logging
 import re
 
 from dataclasses import dataclass, field, replace
@@ -41,11 +42,15 @@ from src.retrieval.retriever import (
 )
 from src.retrieval.terms import expand, expand_law
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "nlpai-lab/KURE-v1"
 DEFAULT_INDEX = Path("data/index/chroma_kurev1_1024")
 LAW_CHUNKS = Path("data/chunks/chunks.jsonl")
 CASE_CHUNKS = Path("data/chunks/cases.jsonl")
 GUIDE_CHUNKS = Path("data/chunks/guides.jsonl")
+# 배포용 샘플 코퍼스. 청크 산출물이 없는 새 클론에서도 기존 Chroma 인덱스와 짝을 이룬다.
+SAMPLE_CHUNKS = Path("data/sample/chunks_expanded.jsonl")
 
 # 어느 doc_type 이 어느 묶음인지. 시행령·시행규칙은 법령과 함께 다뤄야 한다.
 LAW_TYPES = ("law", "decree", "rule")
@@ -414,7 +419,7 @@ class RetrievalService:
         """앱에서 쓰는 방식. 벡터는 Chroma 에서 읽으므로 재임베딩이 없다."""
         from src.retrieval.dense import ChromaRetriever
 
-        chunks = _load_all(chunk_paths)
+        chunks = _load_index_chunks(chunk_paths)
         backend = SentenceTransformerEmbedding(model)
         return cls(chunks, ChromaRetriever(backend, index_path))
 
@@ -519,3 +524,17 @@ def _load_all(paths: tuple[Path | str, ...]) -> list[dict]:
         if path.exists():
             chunks.extend(load_chunks(path))
     return chunks
+
+
+def _load_index_chunks(paths: tuple[Path | str, ...]) -> list[dict]:
+    """색인 ID를 원문 청크와 연결한다.
+
+    새 클론에는 data/chunks 산출물이 없지만, 샘플 청크를 색인한 경우는 지원한다.
+    기본 청크 파일이 하나라도 있으면 그 파일만 사용해 기존 운영 경로를 보존한다.
+    """
+    chunks = _load_all(paths)
+    if chunks or not SAMPLE_CHUNKS.exists():
+        return chunks
+
+    logger.info("생성 청크가 없어 샘플 청크를 검색 원문으로 사용합니다: %s", SAMPLE_CHUNKS)
+    return load_chunks(SAMPLE_CHUNKS)

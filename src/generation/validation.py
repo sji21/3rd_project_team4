@@ -23,6 +23,7 @@ ValidationKind = Literal[
     "citation",
     "quote",
     "value",
+    "condition",
     "amount_role",
     "paragraph",
     "safety_verdict",
@@ -77,7 +78,13 @@ SEMANTIC_JUDGE_SYSTEM = """당신은 전세ON의 답변 검증기입니다.
 
 검색 근거에 없는 법 지식을 새로 보태지 마십시오. 결정론적 출처·숫자 검증은
 이미 앞 단계에서 수행됐으므로 의미와 질문 적합성에 집중하십시오.
-출력은 첫 줄에 PASS 또는 FAIL을 쓰고, FAIL이면 다음 줄에 짧은 이유를 적으십시오."""
+검색 결과에 포함됐더라도 모든 문서를 답변에 사용할 필요는 없습니다. 질문에 직접
+답하는 근거 하나 이상이 답변을 뒷받침하고 답변이 다른 근거와 모순되지 않으면 PASS입니다.
+특히 보증금의 대상·요건을 정한 조문과 실제 우선변제 금액을 정한 조문처럼 서로 다른
+역할의 자료가 함께 검색된 경우, 질문이 묻는 한쪽을 정확히 답했다는 이유만으로
+다른 쪽을 설명하지 않았다고 FAIL로 판정하지 마십시오.
+
+출력은 첫 줄에 PASS 또는 FAIL만 쓰십시오. 이유 설명이나 다른 문장은 쓰지 마십시오."""
 
 
 def build_semantic_judge_prompt(answer: Answer) -> str:
@@ -410,6 +417,91 @@ def _value_issues(answer: Answer) -> list[ValidationIssue]:
     return issues
 
 
+_NEXT_DAY_ERROR_RE = re.compile(r"마친\s*(?:당일|날|때)부터")
+
+
+def _has_next_day_evidence(evidences: tuple[Evidence, ...]) -> bool:
+    return any(
+        "마친때에는그다음날부터" in _compact(evidence.text)
+        for evidence in evidences
+    )
+
+
+def _is_next_day_effect_sentence(sentence: str) -> bool:
+    compact = _compact(sentence)
+    registration = "주민등록" in compact or "전입신고" in compact
+    legal_effect = any(
+        marker in compact
+        for marker in ("효력", "대항력", "제삼자", "제3자", "보호")
+    )
+    return registration and legal_effect
+
+
+def ground_answer_conditions(text: str, evidences: tuple[Evidence, ...]) -> str:
+    """근거에 명시된 대항력 발생 시점의 한정적 오기만 교정한다.
+
+    주민등록·전입신고와 효력을 같이 언급한 문장에만 적용해,
+    신고기한 등 다른 문맥의 `마친 날부터`는 바꾸지 않는다.
+    """
+    if not text or not _has_next_day_evidence(evidences):
+        return text
+
+    sentences = re.split(r"(?<=[.!?])", text)
+    for index, sentence in enumerate(sentences):
+        if not _is_next_day_effect_sentence(sentence):
+            continue
+        sentences[index] = _NEXT_DAY_ERROR_RE.sub("마친 그 다음 날부터", sentence)
+    return "".join(sentences)
+
+
+def _condition_issues(answer: Answer) -> list[ValidationIssue]:
+    """숫자로 표현되지 않는 핵심 시점·요건의 반전을 코드로 차단한다."""
+    evidence_texts = tuple(_compact(evidence.text) for evidence in answer.evidences)
+    issues: list[ValidationIssue] = []
+
+    if _has_next_day_evidence(answer.evidences):
+        for sentence in re.split(r"[.!?;\n]+", answer.raw_text):
+            if not _is_next_day_effect_sentence(sentence):
+                continue
+            match = _NEXT_DAY_ERROR_RE.search(sentence)
+            if match is None:
+                continue
+            issues.append(
+                ValidationIssue(
+                    kind="condition",
+                    text=match.group(0),
+                    detail="근거의 '그 다음 날부터'를 같은 날부터로 바꾸었습니다.",
+                )
+            )
+            break
+
+    registration_is_optional = any(
+        "등기" in text and "없는경우에도" in text
+        for text in evidence_texts
+    )
+    if registration_is_optional:
+        for sentence in re.split(r"[.!?;\n]+", answer.raw_text):
+            compact = _compact(sentence)
+            if not compact or "등기" not in compact:
+                continue
+            if not any(right in compact for right in ("대항력", "우선변제권")):
+                continue
+            if not any(sign in compact for sign in ("필요", "필수", "해야", "하여야", "마쳐야", "통해서만")):
+                continue
+            if any(sign in compact for sign in ("필요하지않", "필수가아니", "하지않아도", "없어도", "등기없이")):
+                continue
+            issues.append(
+                ValidationIssue(
+                    kind="condition",
+                    text=sentence.strip(),
+                    detail="근거는 등기 없이도 효력이 생길 수 있다고 하는데 등기가 필요하다고 바꾸었습니다.",
+                )
+            )
+            break
+
+    return issues
+
+
 def _money_role(text: str) -> str | None:
     normalized = _normalize(text)
 
@@ -617,6 +709,7 @@ def audit_answer(
     issues.extend(_safety_verdict_issues(answer))
     issues.extend(_quote_issues(answer))
     issues.extend(_value_issues(answer))
+    issues.extend(_condition_issues(answer))
     issues.extend(_money_role_issues(answer))
     issues.extend(_paragraph_issues(answer))
 
