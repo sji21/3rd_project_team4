@@ -205,8 +205,9 @@ class FormatContextTests(unittest.TestCase):
         self.assertIn("## 관련 판례", context)
         self.assertLess(context.index("## 관련 법령"), context.index("## 관련 판례"))
 
-    def test_does_not_duplicate_source_header(self) -> None:
-        # 본문이 이미 `[법령명 제N조(제목)]` 로 시작하면 출처를 또 붙이지 않는다.
+    def test_source_name_block_does_not_rebuild_retrieval_body(self) -> None:
+        # 출처명 블록에는 한 번, Retrieval 원문 헤더에는 한 번 나타나는 것이 의도다.
+        # 본문 자체를 Generation 쪽에서 다시 조립해 중복시키지는 않는다.
         result = RetrievalResult(
             question="q",
             laws=[evidence(1, "주택임대차보호법 제3조(대항력 등)", "[주택임대차보호법 제3조(대항력 등)] 본문")],
@@ -214,9 +215,90 @@ class FormatContextTests(unittest.TestCase):
 
         context = prompt_module.format_context(result)
 
-        self.assertEqual(1, context.count("주택임대차보호법 제3조(대항력 등)"))
+        self.assertEqual(2, context.count("주택임대차보호법 제3조(대항력 등)"))
+        self.assertEqual(1, context.count("[주택임대차보호법 제3조(대항력 등)] 본문"))
 
 
+
+
+class FinalOutputGuardrailTests(unittest.TestCase):
+    """dev-017/dev-023에서 실제로 빠졌던 제약을 사용자 턴 끝에 다시 둔다."""
+
+    def test_user_turn_repeats_no_fabricated_time_or_number_rule(self) -> None:
+        text = prompt_module.HUMAN_QA
+
+        self.assertIn("숫자·연도·날짜·기간·금액은 절대 추가하지", text)
+        self.assertIn("특정 연도 같은 시점 표현을 임의로 만들지", text)
+        # 특정 실패 연도 자체를 프롬프트에 박아 모델을 유도하지 않는다.
+        self.assertNotIn("2023", text)
+
+    def test_user_turn_repeats_named_source_requirement(self) -> None:
+        text = prompt_module.HUMAN_QA
+
+        self.assertIn("첫 문장 또는 두 번째 문장", text)
+        self.assertIn("실제로 사용한 출처명을 최소 1개 그대로", text)
+        self.assertIn("어느 기관의 안내인지 반드시", text)
+
+
+class CopyableSourceNameTests(unittest.TestCase):
+    def test_dev017_context_exposes_nts_source_name(self) -> None:
+        result = RetrievalResult(
+            question="계약 전에 집주인이 세금을 안 낸 게 있는지 확인할 수 있나요?",
+            laws=[
+                evidence(
+                    1,
+                    "주택임대차보호법 제3조의7",
+                    "[주택임대차보호법 제3조의7] 본문",
+                )
+            ],
+            guides=[
+                evidence(
+                    1,
+                    "국세청(미납국세열람)",
+                    "[국세청(미납국세열람)] 안내 본문",
+                    "guide",
+                )
+            ],
+        )
+
+        context = prompt_module.format_context(result)
+
+        self.assertIn("[답변에 쓸 출처명]", context)
+        self.assertIn("관련 법령: 주택임대차보호법 제3조의7", context)
+        self.assertIn("관련 기관 안내: 국세청 안내", context)
+
+    def test_dev023_context_exposes_hug_source_name(self) -> None:
+        result = RetrievalResult(
+            question="전세보증금반환보증은 어떤 제도인가요?",
+            guides=[
+                evidence(
+                    1,
+                    "주택도시보증공사(전세보증금반환보증)",
+                    "[주택도시보증공사(전세보증금반환보증)] 안내 본문",
+                    "guide",
+                )
+            ],
+        )
+
+        context = prompt_module.format_context(result)
+
+        self.assertIn("[답변에 쓸 출처명]", context)
+        self.assertIn("관련 기관 안내: 주택도시보증공사 안내", context)
+        self.assertIn("전세보증금반환보증", context)
+
+    def test_source_name_block_keeps_law_case_and_guide_separate(self) -> None:
+        result = RetrievalResult(
+            question="q",
+            laws=[evidence(1, "주택임대차보호법 제3조", "법령 본문")],
+            cases=[evidence(1, "대법원 2011다49523", "판례 본문", "case")],
+            guides=[evidence(1, "HUG(전세보증금반환보증)", "안내 본문", "guide")],
+        )
+
+        context = prompt_module.format_context(result)
+
+        self.assertIn("관련 법령: 주택임대차보호법 제3조", context)
+        self.assertIn("관련 판례: 대법원 2011다49523", context)
+        self.assertIn("관련 기관 안내: 주택도시보증공사 안내", context)
 
 
 class ThinkSwitchLiveReadTests(unittest.TestCase):

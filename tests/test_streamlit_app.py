@@ -1,8 +1,10 @@
-"""PATCH-003 Streamlit 초기 화면과 업로드 검증 테스트."""
+"""전세ON Streamlit 챗봇 초기 화면과 질문 처리 테스트."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 from streamlit.testing.v1 import AppTest
 
@@ -10,54 +12,72 @@ from streamlit.testing.v1 import AppTest
 APP_PATH = Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py"
 
 
-def load_app() -> AppTest:
+class FakeAnswer:
+    status = "answered"
+    text = "테스트 답변입니다."
+    raw_text = text
+
+    @staticmethod
+    def sources() -> list[dict]:
+        return []
+
+
+def install_ui_test_stubs(monkeypatch) -> None:
+    """UI 테스트가 실제 검색 인덱스와 LLM을 준비하지 않게 한다."""
+
+    dotenv_module = ModuleType("dotenv")
+    dotenv_module.load_dotenv = lambda *_args, **_kwargs: True
+
+    chain_module = ModuleType("src.generation.chain")
+    chain_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
+
+    conversation_module = ModuleType("src.generation.conversation")
+
+    class ResolvedQuestion:
+        standalone = "독립 질문"
+        used_history = False
+
+    conversation_module.resolve_question = (
+        lambda _question, _messages: ResolvedQuestion()
+    )
+
+    models_module = ModuleType("src.generation.models")
+    models_module.Answer = FakeAnswer
+
+    monkeypatch.setitem(sys.modules, "dotenv", dotenv_module)
+    monkeypatch.setitem(sys.modules, "src.generation.chain", chain_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "src.generation.conversation",
+        conversation_module,
+    )
+    monkeypatch.setitem(sys.modules, "src.generation.models", models_module)
+
+
+def load_app(monkeypatch) -> AppTest:
+    install_ui_test_stubs(monkeypatch)
     app = AppTest.from_file(APP_PATH)
     return app.run(timeout=20)
 
 
-def test_initial_screen_has_upload_consent_and_disabled_action() -> None:
-    app = load_app()
+def test_initial_screen_is_chat_first_without_quick_questions(monkeypatch) -> None:
+    app = load_app(monkeypatch)
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == [
-        "등기 주의 신호 점검",
-        "임대차계약서 점검",
-        "RAG·챗봇 연결 안내",
-    ]
-    assert len(app.get("file_uploader")) == 2
-    assert app.checkbox[0].value is False
-    assert app.button[0].label == "주의 신호 점검하기"
-    assert app.button[0].disabled is True
+    assert len(app.chat_input) == 1
+    assert app.chat_input[0].placeholder.startswith("예: 전입신고")
+    assert app.sidebar.button[0].label == "🗑️ 대화 내용 지우기"
+
+    button_labels = [button.label for button in app.button]
+    assert button_labels == ["🗑️ 대화 내용 지우기"]
 
 
-def test_invalid_pdf_shows_validation_error() -> None:
-    app = load_app()
-    app.get("file_uploader")[0].upload("registry.pdf", b"not a pdf", "application/pdf")
-    app.checkbox[0].check()
-    app.button[0].click()
+def test_chat_input_runs_the_existing_answer_chain(monkeypatch) -> None:
+    app = load_app(monkeypatch)
+    app.chat_input[0].set_value(
+        "전입신고와 확정일자를 받으면 어떤 효력이 있나요?"
+    )
     app.run(timeout=20)
 
     assert not app.exception
-    assert any("PDF 형식" in error.value for error in app.error)
-
-
-def test_contract_upload_has_separate_consent_and_validation() -> None:
-    app = load_app()
-    app.get("file_uploader")[1].upload("contract.pdf", b"not a pdf", "application/pdf")
-    app.checkbox[1].check()
-    app.button[1].click()
-    app.run(timeout=20)
-
-    assert not app.exception
-    assert any("PDF 형식" in error.value for error in app.error)
-
-
-def test_contract_upload_accepts_image_and_validates_its_contents() -> None:
-    app = load_app()
-    app.get("file_uploader")[1].upload("contract.png", b"not an image", "image/png")
-    app.checkbox[1].check()
-    app.button[1].click()
-    app.run(timeout=20)
-
-    assert not app.exception
-    assert any("손상" in error.value for error in app.error)
+    assert any("테스트 답변입니다." in markdown.value for markdown in app.markdown)

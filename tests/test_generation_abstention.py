@@ -56,6 +56,44 @@ class AbstentionTests(unittest.TestCase):
         self.assertTrue(decision.out_of_scope)
         self.assertEqual(decision.reason, "market_price_lookup")
 
+
+    def test_market_term_in_legal_condition_is_not_price_lookup(self):
+        decision = classify_scope(
+            "현재 전세가격이 보증금보다 낮으면 우선변제는 어떻게 되나요?"
+        )
+
+        self.assertFalse(decision.out_of_scope)
+        self.assertEqual(decision.reason, "in_scope")
+
+    def test_market_description_question_still_refuses(self):
+        decision = classify_scope("현재 이 아파트 시세가 어떻게 되나요?")
+
+        self.assertTrue(decision.out_of_scope)
+        self.assertEqual(decision.reason, "market_price_lookup")
+
+    def test_broad_non_rental_terms_require_semantic_review(self):
+        questions = (
+            "주식 세금은 어떻게 내나요?",
+            "근로계약서 계약기간은 어떻게 정하나요?",
+            "경매로 산 자동차 소유권은 언제 생기나요?",
+        )
+
+        for question in questions:
+            calls = []
+
+            def judge(value):
+                calls.append(value)
+                return True
+
+            with self.subTest(question=question):
+                initial = classify_scope(question)
+                self.assertTrue(initial.needs_semantic_review)
+
+                decision = classify_scope(question, semantic_judge=judge)
+                self.assertTrue(decision.out_of_scope)
+                self.assertEqual(decision.reason, "semantic_out_of_scope")
+                self.assertEqual(calls, [question])
+
     def test_allows_informational_risk_question(self):
         self.assertFalse(
             is_out_of_scope("전세계약 전에 어떤 위험 요소를 확인해야 하나요?")
