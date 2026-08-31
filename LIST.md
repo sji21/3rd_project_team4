@@ -8,7 +8,7 @@
 | [x] | PATCH-002 | 완료 | gitcatho | `feat/patch-002-risk-signals` | 기능 추가 | 높음 | 개인정보 마스킹과 등기 위험 신호 규칙 | 주민번호·전화·계좌 마스킹, 갑구·을구 핵심 신호 탐지, 근거 페이지·문구·추가 확인사항 반환, 안전 판정 금지, 규칙 테스트 통과 | PATCH-001 | - | 2026-08-26 | 2026-08-26 | `417d86b` |
 | [x] | PATCH-003 | 완료 | gitcatho | `feat/patch-003-streamlit-registry-check` | 기능 추가 | 높음 | Streamlit PDF 업로드 및 점검 결과 화면 | 동의 기반 PDF 업로드, 상태·신호·근거·체크리스트 표시, 마스킹된 미리보기, 개인정보 제외 JSON 다운로드, Streamlit 앱 테스트 통과 | PATCH-002 | - | 2026-08-26 | 2026-08-26 | `42c51e1` |
 | [x] | PATCH-004 | 완료 | gitcatho | `feat/patch-004-rag-handoff` | 기능 추가 | 중간 | LangChain·LangGraph 후속 연결 인터페이스 | 위험 신호별 RAG 질의 생성, Retriever 입력 스키마 문서화, `ANSWER/ABSTAIN/REFUSE` 연결 경계 명시, 현재 기능은 LLM 없이 실행 | PATCH-002 | - | 2026-08-26 | 2026-08-26 | `e7fbf55` |
-| [ ] | PATCH-005 | 리뷰 중 | gitcatho | `feat/patch-005-registry-integration` | 테스트 | 중간 | 실행 문서, 통합 테스트와 Windows 재현 검증 | README·설치 문서 갱신, 실제 샘플 통합 테스트, `pytest -q`·`pip check` 통과, macOS 실측 기록, Windows 팀원 검증 절차와 결과 기록 | PATCH-001, PATCH-002, PATCH-003, PATCH-004, PATCH-006 | - | 2026-08-26 | - | `0d93f60` |
+| [ ] | PATCH-005 | 완료 | gitcatho | `feat/patch-005-registry-integration` | 테스트 | 중간 | 실행 문서, 통합 테스트와 Windows 재현 검증 | README·설치 문서 갱신, 실제 샘플 통합 테스트, `pytest -q`·`pip check` 통과, macOS 실측 기록, Windows 팀원 검증 절차와 결과 기록 | PATCH-001, PATCH-002, PATCH-003, PATCH-004, PATCH-006 | - | 2026-08-26 | - | `0d93f60` |
 | [x] | PATCH-006 | 완료 | gitcatho | `fix/patch-006-pdfium-thread-safety` | 버그 수정 | 높음 | pypdfium2 동시 렌더링 segmentation fault 수정 | PDF 렌더링은 단일 흐름으로 수행하고 Tesseract subprocess만 병렬화, 실제 6페이지 샘플 반복 5회 무충돌, 전체 테스트 통과 | PATCH-001 | - | 2026-08-26 | 2026-08-26 | `534920d` |
 | [x] | PATCH-007 | 완료 | gitcatho | `fix/patch-007-theme-contrast` | 버그 수정 | 높음 | Streamlit 밝은 배경에서 흰색 본문이 보이지 않는 테마 충돌 수정 | 앱 테마를 명시하고 본문·위젯·사이드바 대비를 확인, 화면 회귀 테스트와 전체 테스트 통과 | PATCH-003 | - | 2026-08-27 | 2026-08-27 | `26f8cd1` |
 | [x] | PATCH-008 | 완료 | gitcatho | `feat/patch-008-project-structure` | 리팩터링 | 중간 | README 기준으로 프로젝트 코드·기획 문서·생성 스크립트와 산출물 구조 정리 | 기존 기능과 import 경로를 보존하며 파일을 역할별 디렉터리에 배치하고 README 구조·실행법·산출물 위치를 갱신한 뒤 전체 테스트 통과 | PATCH-007 | - | 2026-08-27 | 2026-08-27 | `0185314` |
@@ -24,9 +24,11 @@
 | [x] | PATCH-019 | 완료 | yoonjihwan402 | `feat/patch-019` | 기능 추가 | 중간 | PATCH-018 표준 판례 청크 기반 임베딩 비교·평가 통합 | 공통 `cases.jsonl`·메타데이터·Chroma 색인 구조를 사용해 판례 전용 KURE 평가와 로컬·Hugging Face 임베딩 비교를 재현 가능하게 실행하고, 운영용 통합 인덱스를 변경하지 않아야 한다 | PATCH-018 | - | 2026-08-29 | 2026-08-29 | `9ef5911` |
 | [x] | PATCH-020 | 완료 | sji21 | `feat/patch-020-holdout-eval` | 검증 | 높음 | 홀드아웃 평가셋 봉인·1회 측정과 공식 안내 원문 적재 | 저장소를 본 적 없는 출처가 쓴 질문으로 평가셋을 만들고, 정답은 법령 원문만 보고 붙이며, 범위 밖 판정을 점수 확인 전에 끝내고, 결과를 보고 설정을 고치지 않아야 하며, 공식 안내는 원문을 수집해 법령·판례와 별도 묶음으로 반환해야 한다 | PATCH-018 | - | 2026-08-29 | 2026-08-30 | `69e662a` |
 | [x] | PATCH-021 | 완료 | BellaHez | `feat/patch-021-generation-core` | 기능 추가 | 높음 | 검색 진입점과 로컬 LLM 을 LCEL 체인으로 연결 | `RetrievalService` 가 준 근거로 프롬프트를 만들어 로컬 양자화 LLM(Qwen3-8B)에 넘기고, answered·abstained·refused 세 갈래로만 끝나야 하며, 면책 문구와 출처는 LLM 이 아니라 코드가 붙이고, Ollama 없이도 도는 테스트가 통과해야 한다 | PATCH-015, PATCH-018 | - | 2026-08-29 | 2026-08-30 | `f4cd49a` |
-| [x] | PATCH-022 | 완료 | chzhdndb90 | `feat/patch-022-case-data-ingestion` | 기능 추가 | 높음 | 공식 판례 상세 원천을 표준 판례 레코드로 변환 | 국가법령정보센터 상세 원천 JSONL에서 207건 표준 `case_records.jsonl`을 재현하고, 사건번호 중복·수동 제외 범위를 일관되게 처리하며, SQLite·청크 적재 규격 테스트가 통과해야 한다 | PATCH-018, PATCH-019 | PR #10 | 2026-08-30 | 2026-08-30 | `7e178f7` |
+| [x] | PATCH-022 | 완료 | yoonjihwan402 | `feat/patch-022-case-data-ingestion` | 기능 추가 | 높음 | 공식 판례 상세 원천을 표준 판례 레코드로 변환 | 국가법령정보센터 상세 원천 JSONL에서 207건 표준 `case_records.jsonl`을 재현하고, 사건번호 중복·수동 제외 범위를 일관되게 처리하며, SQLite·청크 적재 규격 테스트가 통과해야 한다 | PATCH-018, PATCH-019 | PR #10 | 2026-08-30 | 2026-08-30 | `7e178f7` |
 | [x] | PATCH-024 | 완료 | kimjeongjaeae | `feat/patch-024-generation-safety` | 기능 변경 | 높음 | Generation 안전성 및 답변 품질 개선 | 범위 판정·프롬프트 인젝션 방어·비밀정보 마스킹·출처·수치 검증·abstention 로직을 보완하고 Qwen 호출 안정화와 평가 스크립트를 정리한다 | PATCH-021, PATCH-023 | PR #11 | 2026-08-31 | 2026-08-31 | `9039cd5` |
-| [ ] | PATCH-025 | 진행 중 | chzhdndb90 | `fix/patch-025-review-hardening` | 버그 수정 | 높음 | PATCH-022 리뷰 보완: 공식 판례 검증·안전 변환·DB 이관 | `LAW_OPEN_API_OC`로 환경·문서를 통일하고, 후보 수와 성공 수가 일치하고 수집 불가가 0건일 때만 원천을 발행한다. 실패하면 기존 출력은 보존하고 보고서에 `published: false`를 남긴 뒤 실패 종료한다. 날짜·오류·제외·수동 검토·동일성 충돌을 분리하며, 수동 분류 CSV는 승인 건만 포함한다. 기존 사건번호 UNIQUE DB는 인용·청크 관계와 두 날짜/사건번호 인덱스를 보존한 채 이관하고, API 복구·변환·적재·이관 회귀 테스트를 통과해야 한다. 13건과 207건은 각각 공개 API 초기 기준선·역사적 스테이징 기록일 뿐 완료 건수 조건은 아니다. | PATCH-022 | - | 2026-08-30 | - | `12c025e` |
+| [x] | PATCH-025 | 완료 | yoonjihwan402 | `fix/patch-025-review-hardening` | 버그 수정 | 높음 | PATCH-022 리뷰 보완: 공식 판례 검증·안전 변환·DB 이관 | `LAW_OPEN_API_OC`로 환경·문서를 통일하고, 후보 수와 성공 수가 일치하고 수집 불가가 0건일 때만 원천을 발행한다. 실패하면 기존 출력은 보존하고 보고서에 `published: false`를 남긴 뒤 실패 종료한다. 날짜·오류·제외·수동 검토·동일성 충돌을 분리하며, 수동 분류 CSV는 승인 건만 포함한다. 기존 사건번호 UNIQUE DB는 인용·청크 관계와 두 날짜/사건번호 인덱스를 보존한 채 이관하고, API 복구·변환·적재·이관 회귀 테스트를 통과해야 한다. 13건과 207건은 각각 공개 API 초기 기준선·역사적 스테이징 기록일 뿐 완료 건수 조건은 아니다. | PATCH-022 | PR #12 | 2026-08-30 | 2026-08-31 | `12c025e` |
+| [ ] | PATCH-026 | 완료 | sji21 | `feat/patch-026-law-intent-expansion` | 검색 개선 | 높음 | 생성 모델의 법령 TOP3 계약에 맞춘 법령 순위와 복합 근거 확보 개선 | 법령에만 `rrf_k=5`와 효과·절차를 구분하는 문맥 확장을 적용해 서비스 인덱스 법령 24문항의 Hit@1 79.2%를 유지하고 Hit@3 91.7%→100%, Recall@3 97.9%→100%를 재현한다. 판례·안내 설정과 순위를 바꾸지 않으며, 규칙이 관찰 42문항 중 1문항에만 발동한 한계와 새 효과·절차 질문 재검증 과제를 문서화한다. | PATCH-020, PATCH-021 | - | 2026-08-31 | - | - |
+| [ ] | PATCH-028 | 리뷰 중 | yoonjihwan402 | `feat/patch-028-case-holdout-eval` | 검증·버그 수정 | 높음 | 공식 판례 안전 발행 보완과 판례 전용 홀드아웃 평가 | API 상세 응답은 `case_id` 일치와 사건번호·법원·선고일 중 2개 이상 일치해야 하며, 일부 필수 필드 누락·재수집 실패·동일성 불일치 시 기존 원천을 바꾸지 않는다. 수동 검토는 `case_id`로 연결한다. 현재 검증 판례 20건의 판례 전용 문항을 고정하고 BM25·KURE-v1·RRF를 같은 `case_id` 정답으로 비교한 보고서·공유 PDF·회귀 테스트를 제공한다. | PATCH-025, PATCH-019 | - | 2026-08-31 | - | `5ded534`, `0cf9755` |
 
 ## 현재 작업 경계
 
@@ -35,10 +37,12 @@
 - 현재 완료 패치: `PATCH-017` (PR #4 병합)
 - 현재 완료 패치: `PATCH-018` (PR #5 병합)
 - 현재 완료 패치: `PATCH-019` (PR #6 병합, 판례 전용 비교·평가)
-- 현재 완료 패치: `PATCH-022` (공식 판례 원천 JSONL 표준 변환·재생성 경로, PR #10)
-- 현재 진행 패치: `PATCH-025` (PATCH-022 리뷰 보완: 공식 API 검증·안전 변환·DB 이관)
 - 현재 완료 패치: `PATCH-020` (PR #7 병합, 홀드아웃 평가·공식 안내)
 - 현재 완료 패치: `PATCH-021` (PR #9 병합, 생성 코어)
+- 현재 완료 패치: `PATCH-022` (공식 판례 원천 JSONL 표준 변환·재생성 경로, PR #10)
+- 현재 완료 패치: `PATCH-025` (PATCH-022 리뷰 보완: 공식 API 검증·안전 변환·DB 이관, PR #12)
+- 현재 진행 패치: `PATCH-026` (법령 TOP3 순위·복합 근거 확보 개선)
+- 현재 리뷰 패치: `PATCH-028` (공식 판례 안전 발행 보완·판례 전용 홀드아웃 평가)
 - 생성 파트 검증: 전체 테스트 271개 통과(스킵 2) — 생성 신규 82개 포함(main 병합 후, 공식 안내 대응). `src/retrieval/*`·`.env.example`·`README.md` 는 수정하지 않았다(`requirements.txt` 는 직접 import 하는 `langchain-core` 누락과 `langchain-openai` 버전 미고정을 팀 합의로 반영)
 - 생성 파트는 근거를 법령 3건·판례 2건과 공식 안내 최대 2건만 쓴다(`docs/retrieval-handoff.md` 의 건수 조절 안내). 5+5 로는 8B 모델이 초점을 잃어 오답을 냈고, 3+2 로 줄이자 같은 문항이 정답으로 바뀐 측정 결과에 따른 것이다. 더 큰 모델로 바꾸면 재측정해야 한다
 - `PATCH-015`는 생성 담당이 완료해 병합됨(PR #2)

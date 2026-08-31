@@ -58,27 +58,27 @@ class ReviewClassification:
 
 
 def load_review_classifications(path: Path) -> dict[str, ReviewClassification]:
-    """수동 검토 CSV의 사건번호별 승인·제외·보류 결정을 읽는다."""
+    """수동 검토 CSV의 case_id별 승인·제외·보류 결정을 읽는다."""
 
     with path.open(encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
-        required = {"case_number", "review_decision", "review_basis"}
+        required = {"case_id", "review_decision", "review_basis"}
         if not reader.fieldnames or not required.issubset(reader.fieldnames):
             missing = ", ".join(sorted(required.difference(reader.fieldnames or [])))
             raise ValueError(f"수동 검토 CSV 필수 열이 없습니다: {missing}")
         classifications: dict[str, ReviewClassification] = {}
         for lineno, row in enumerate(reader, 2):
-            case_number = clean(row.get("case_number"))
+            case_id = clean(row.get("case_id"))
             decision = clean(row.get("review_decision")).lower()
             basis = clean(row.get("review_basis"))
-            if not case_number:
-                raise ValueError(f"수동 검토 CSV {lineno}번째 줄의 case_number가 비어 있음")
+            if not case_id:
+                raise ValueError(f"수동 검토 CSV {lineno}번째 줄의 case_id가 비어 있음")
             if decision not in REVIEW_DECISIONS:
                 raise ValueError(f"수동 검토 CSV {lineno}번째 줄의 review_decision이 허용값이 아님: {decision}")
             classification = ReviewClassification(decision=decision, basis=basis)
-            previous = classifications.setdefault(case_number, classification)
+            previous = classifications.setdefault(case_id, classification)
             if previous != classification:
-                raise ValueError(f"수동 검토 CSV의 사건번호 결정이 충돌함: {case_number}")
+                raise ValueError(f"수동 검토 CSV의 case_id 결정이 충돌함: {case_id}")
     return classifications
 
 
@@ -276,7 +276,7 @@ def parse_raw_lines(
                 summary.excluded.append(f"{lineno}번째 줄 {record.case_id}: {reason}")
                 continue
             if decision == "review":
-                classification = (review_classifications or {}).get(record.case_number)
+                classification = (review_classifications or {}).get(record.case_id)
                 if classification is None or classification.decision == "pending":
                     suffix = f" ({classification.basis})" if classification and classification.basis else ""
                     summary.needs_review.append(f"{lineno}번째 줄 {record.case_id}: {reason}{suffix}")
