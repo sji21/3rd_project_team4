@@ -1,26 +1,29 @@
-"""LCEL 체인 — Retriever → Prompt → LLM → 답변.
+"""LCEL 생성 runtime — 사전 안전성 검사 → Retrieval → Qwen → 최종 검증.
 
-흐름은 세 갈래로만 끝난다.
+사용자에게 나가는 답은 세 갈래로만 끝난다.
 
-  refused   : 서비스 범위 밖 질문. **검색도 LLM 호출도 하지 않는다.**
-  abstained : 검색은 했지만 근거가 없다. LLM 을 부르지 않고 그대로 보류한다.
-  answered  : 근거가 있을 때만 LLM 을 부른다. 면책 문구는 코드가 붙인다.
+  refused   : 프롬프트 인젝션 또는 서비스 범위 밖 질문. Retrieval 전에 끝낸다.
+  abstained : 근거가 없거나 생성·검증을 통과하지 못한 답변.
+  answered  : 검색 근거를 바탕으로 만든 최종 문장이 검증까지 통과한 답변.
 
-검색은 `src.retrieval.service.RetrievalService` 하나만 쓴다. 어떤 검색기를
-어떻게 섞는지(BM25 + KURE 하이브리드, 상가 라우팅, status 필터)는 전부 그 안에
-있고 이 파일은 몰라도 된다 — docs/retrieval-handoff.md 가 정한 경계다.
+검색은 `src.retrieval.service.RetrievalService`의 공개 경계만 사용한다. 검색기 구현이나
+검색 개수 정책은 이 파일에서 바꾸지 않는다. 생성 runtime은 B 파트의 deterministic
+검사와 Qwen semantic judge를 연결하고, 사용자에게 실제로 보낼 `raw_text` 자체를
+최종 검증한다.
 
-## 다른 담당자의 파일과 만나는 자리
+기본 흐름:
 
-`abstention.py`(ANSWER·ABSTAIN·REFUSE 정책), `citation.py`(출처 검증),
-`validation.py`(근거 밖 주장 검증)는 다른 담당자의 파일이라 여기서 구현하지
-않는다. 대신 `answer_question()` 이 그 자리를 인자로 열어 둔다.
+    secret/PII masking
+      → prompt-injection hard guard (+ 애매한 경우 Qwen judge)
+      → scope hard guard (+ 애매하거나 다른 도메인일 때만 Qwen judge)
+      → Retrieval
+      → main Qwen answer (정확성 우선 + 쉬운 표현까지 한 번에 생성)
+      → citation/deterministic validation
+      → Qwen semantic judge
+      → PASS: answered / FAIL: abstained
 
-    answer_question(question, refuse_check=abstention.is_out_of_scope)
-
-지금 기본값은 "범위 판정을 하지 않음" 이다. 아무 판정도 없는 편이, 여기서 대충
-만든 규칙이 나중에 진짜 정책과 어긋난 채 굳는 것보다 낫다. 근거가 아예 없을 때의
-ABSTAIN 만 기본으로 동작한다 — 그건 정책이 아니라 검색 결과가 비었다는 사실이다.
+`build_qa_chain()`은 프롬프트와 main LLM만 묶는 저수준 체인이다. 사용자 요청을
+처리하는 안전한 진입점은 `answer_question()`이다.
 """
 
 from __future__ import annotations
@@ -32,13 +35,33 @@ from pathlib import Path
 from typing import Callable
 
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
 
-from src.generation import prompt as prompt_module
+from src.document_check.privacy import mask_sensitive_text
 from src.generation import llm as llm_module
+from src.generation import prompt as prompt_module
+from src.generation.citation import audit_citations
+from src.generation.abstention import (
+    SCOPE_JUDGE_SYSTEM,
+    build_scope_judge_prompt,
+    classify_scope,
+)
 from src.generation.llm import clean_output, get_llm
 from src.generation.models import Answer
-from src.retrieval.service import RetrievalResult, RetrievalService
+from src.generation.validation import (
+    SEMANTIC_JUDGE_SYSTEM,
+    SemanticJudgement,
+    audit_answer,
+    build_semantic_judge_prompt,
+)
+from src.retrieval.service import Evidence, RetrievalResult, RetrievalService
+from src.security.prompt_injection import (
+    PROMPT_INJECTION_JUDGE_SYSTEM,
+    build_prompt_injection_judge_prompt,
+    classify_prompt_injection,
+)
+from src.security.secret_filter import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +185,171 @@ def build_qa_chain(llm=None) -> Runnable:
 
 # ── 질문 하나 처리 ─────────────────────────────────────────────
 
+_PROMPT_INJECTION_NOTICE = (
+    "시스템 지시를 바꾸거나 숨겨진 내부 지시를 요구하는 요청은 처리할 수 없습니다. "
+    "주택임대차 관련 질문으로 다시 작성해 주세요."
+)
+
+_OUT_OF_SCOPE_NOTICE = (
+    "주택임대차 관련 법령·판례·공식 기관 안내 범위에서 답할 수 없는 질문입니다. "
+    "임대차 권리·절차와 관련된 질문으로 다시 작성해 주세요."
+)
+
+_MARKET_PRICE_NOTICE = (
+    "부동산 시세나 실거래가 조회는 이 서비스의 답변 범위가 아닙니다. "
+    "주택임대차 관련 권리·절차나 법적 근거를 질문해 주세요."
+)
+
+_VALIDATION_FAILED_TEXT = (
+    "생성된 답변이 검색 근거와 일치하는지 충분히 확인하지 못해 답변을 보류했습니다. "
+    "질문을 조금 더 구체적으로 바꿔 다시 물어봐 주세요."
+)
+
+
+def _safe_question(question: str) -> str:
+    """LLM·검색·로그에 넘기기 전에 비밀정보와 개인정보를 가린다."""
+
+    secret_masked = redact_secrets(question or "").text
+    return mask_sensitive_text(secret_masked)
+
+
+def _invoke_auxiliary_llm(llm, system_prompt: str, user_prompt: str) -> str:
+    """분류·재작성·사후검증용 Qwen 호출을 한 형태로 묶는다."""
+
+    chain = (
+        ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                ("human", "{input}"),
+            ]
+        )
+        | llm
+        | StrOutputParser()
+        | RunnableLambda(clean_output)
+    )
+    return chain.invoke({"input": user_prompt}).strip()
+
+
+def _parse_label(text: str, allowed: tuple[str, ...]) -> str:
+    """분류기의 첫 비어 있지 않은 줄에서 허용된 label 하나를 읽는다."""
+
+    for line in (text or "").splitlines():
+        normalized = line.strip().upper().rstrip(".:：")
+        if not normalized:
+            continue
+        for label in allowed:
+            if normalized == label or normalized.startswith(f"{label} "):
+                return label
+        break
+    raise ValueError(f"예상하지 못한 LLM 판정 출력: {text!r}")
+
+
+def _scope_judge(llm) -> Callable[[str], bool]:
+    def judge(question: str) -> bool:
+        output = _invoke_auxiliary_llm(
+            llm,
+            SCOPE_JUDGE_SYSTEM,
+            build_scope_judge_prompt(question),
+        )
+        return _parse_label(output, ("ALLOW", "REFUSE")) == "REFUSE"
+
+    return judge
+
+
+def _injection_judge(llm) -> Callable[[str], bool]:
+    def judge(text: str) -> bool:
+        output = _invoke_auxiliary_llm(
+            llm,
+            PROMPT_INJECTION_JUDGE_SYSTEM,
+            build_prompt_injection_judge_prompt(text),
+        )
+        return _parse_label(output, ("ALLOW", "BLOCK")) == "BLOCK"
+
+    return judge
+
+
+def _semantic_judge(llm):
+    def judge(
+        question: str,
+        answer_text: str,
+        evidences: tuple[Evidence, ...],
+    ) -> SemanticJudgement:
+        # build_semantic_judge_prompt()는 Answer.evidences만 읽으므로, 검증 prompt
+        # 조립용 임시 Answer에서는 evidences를 laws 슬롯에 모아도 의미가 바뀌지 않는다.
+        probe = Answer(
+            question=question,
+            status="answered",
+            text=answer_text,
+            raw_text=answer_text,
+            laws=tuple(evidences),
+        )
+        output = _invoke_auxiliary_llm(
+            llm,
+            SEMANTIC_JUDGE_SYSTEM,
+            build_semantic_judge_prompt(probe),
+        )
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        if not lines:
+            raise ValueError("semantic judge가 빈 결과를 반환했습니다.")
+
+        label = _parse_label(lines[0], ("PASS", "FAIL"))
+        detail = " ".join(lines[1:]).strip()
+        return SemanticJudgement(
+            supported=label == "PASS",
+            detail=detail,
+        )
+
+    return judge
+
+
+def _refused_answer(question: str, reason: str) -> Answer:
+    if reason == "contract_safety_verdict":
+        notice = prompt_module.NON_VERDICT_NOTICE
+    elif reason == "market_price_lookup":
+        notice = _MARKET_PRICE_NOTICE
+    elif reason == "prompt_injection":
+        notice = _PROMPT_INJECTION_NOTICE
+    else:
+        notice = _OUT_OF_SCOPE_NOTICE
+
+    return Answer(
+        question=question,
+        status="refused",
+        text=f"{notice}\n\n{prompt_module.DISCLAIMER}",
+    )
+
+
+def _abstained_after_validation(
+    question: str,
+    result: RetrievalResult,
+    report,
+) -> Answer:
+    # 실패한 생성 원문 전체는 사용자-facing Answer나 로그에 넣지 않는다.
+    # 원인 확인에 필요한 검증 대상 조각(issue.text)만 secret redaction 후 남긴다.
+    issue_summary = [
+        {
+            "kind": issue.kind,
+            "text": redact_secrets(issue.text),
+            "detail": issue.detail,
+            "evidence_chunk_ids": issue.evidence_chunk_ids,
+        }
+        for issue in report.issues
+    ]
+    logger.warning(
+        "생성 답변 검증 실패: question=%r issues=%s",
+        question,
+        issue_summary,
+    )
+    return Answer(
+        question=question,
+        status="abstained",
+        text=f"{_VALIDATION_FAILED_TEXT}\n\n{prompt_module.DISCLAIMER}",
+        laws=tuple(result.laws),
+        cases=tuple(result.cases),
+        guides=tuple(result.guides),
+    )
+
+
 def answer_question(
     question: str,
     service: RetrievalService | None = None,
@@ -170,48 +358,104 @@ def answer_question(
     k_case: int = DEFAULT_K_CASE,
     k_guide: int = DEFAULT_K_GUIDE,
     refuse_check: Callable[[str], bool] | None = None,
+    auxiliary_llm=None,
 ) -> Answer:
-    """질문 하나에 대해 검색 → 프롬프트 → LLM → 답변을 전부 실행한다.
+    """질문 하나를 사전 검사부터 사후 검증까지 처리한다.
 
-    refuse_check 는 범위 밖 질문을 걸러내는 함수다(abstention.py 담당). 참을
-    돌려주면 검색과 LLM 호출을 건너뛴다 — 비용도 아끼지만, 애초에 답하면 안 되는
-    질문에 근거를 모아 주는 일 자체를 막는 것이 목적이다.
+    ``llm``은 실제 답변 생성 모델이고, ``auxiliary_llm``은 범위 분류와
+    semantic validation에 쓰는 모델이다. 값을 주지 않으면 둘 다 같은 Qwen 설정의
+    별도 클라이언트를 만든다. 테스트에서는 fake LLM을 각각 주입할 수 있다.
+
+    prompt injection과 scope의 LLM 판정은 deterministic 단계가 semantic review가
+    필요하다고 표시한 입력에만 호출한다. 명백한 임대차 질문은 scope Qwen을 생략한다.
     """
-    if refuse_check is not None and refuse_check(question):
-        return Answer(
-            question=question,
-            status="refused",
-            text=f"{prompt_module.NON_VERDICT_NOTICE}\n\n{prompt_module.DISCLAIMER}",
-        )
 
-    service = service if service is not None else get_default_service()
-    result: RetrievalResult = service.search(
-        question, k_law=k_law, k_case=k_case, k_guide=k_guide
-    )
+    safe_question = _safe_question(question)
 
-    # 빈 질문과 근거 없음이 여기서 함께 걸린다. 검색 쪽이 빈 질문에 빈 결과를
-    # 주기로 되어 있어(docs/retrieval-handoff.md 5절) 따로 검사하지 않는다.
-    if result.is_empty():
+    if not safe_question.strip():
         return Answer(
-            question=question,
+            question=safe_question,
             status="abstained",
             text=f"{prompt_module.NO_EVIDENCE_TEXT}\n\n{prompt_module.DISCLAIMER}",
         )
 
-    chain = build_qa_chain(llm)
+    # 1) 명백한 prompt injection은 LLM에 보여 주기 전에 코드로 차단한다.
+    injection = classify_prompt_injection(safe_question)
+    if injection.blocked:
+        return _refused_answer(safe_question, "prompt_injection")
+
+    runtime_aux_llm = auxiliary_llm if auxiliary_llm is not None else llm
+
+    def get_aux_llm():
+        nonlocal runtime_aux_llm
+        if runtime_aux_llm is None:
+            # 분류·검증은 창작이 필요 없으므로 main answer보다 짧게 제한한다.
+            # 동일 Qwen을 쓰되 보조 호출의 폭주를 막는다.
+            runtime_aux_llm = get_llm(
+                temperature=0.0,
+                max_tokens=96,
+                timeout=90,
+                max_retries=0,
+            )
+        return runtime_aux_llm
+
+    # ambiguous injection만 Qwen으로 재검사한다. 일반 질문마다 한 번 더 부르지 않는다.
+    if injection.needs_semantic_review:
+        injection = classify_prompt_injection(
+            safe_question,
+            semantic_judge=_injection_judge(get_aux_llm()),
+        )
+        if injection.blocked:
+            return _refused_answer(safe_question, "prompt_injection")
+
+    # 2) scope hard guard. 개별 계약 안전성/시세는 Qwen 전에 즉시 REFUSE한다.
+    scope = classify_scope(safe_question)
+    if scope.out_of_scope:
+        return _refused_answer(safe_question, scope.reason)
+
+    # 기존 호출자가 별도 정책을 주입했다면 semantic scope judge 전에 비용 없이 적용한다.
+    if refuse_check is not None and refuse_check(safe_question):
+        return _refused_answer(safe_question, "custom_scope")
+
+    # 명백한 임대차 질문은 scope Qwen을 생략한다. 범위가 애매하거나
+    # 임대차 도메인 신호가 없는 경우에만 semantic judge를 호출한다.
+    if scope.needs_semantic_review:
+        scope = classify_scope(
+            safe_question,
+            semantic_judge=_scope_judge(get_aux_llm()),
+        )
+        if scope.out_of_scope:
+            return _refused_answer(safe_question, scope.reason)
+
+    # 3) Retrieval. 검색 구현/상한은 retrieval 경계를 그대로 사용한다.
+    service = service if service is not None else get_default_service()
+    result: RetrievalResult = service.search(
+        safe_question, k_law=k_law, k_case=k_case, k_guide=k_guide
+    )
+
+    if result.is_empty():
+        return Answer(
+            question=safe_question,
+            status="abstained",
+            text=f"{prompt_module.NO_EVIDENCE_TEXT}\n\n{prompt_module.DISCLAIMER}",
+        )
+
+    # 4) main Qwen answer.
+    # 네트워크/서버 오류 때 OpenAI client의 자동 재시도로 180초 timeout이
+    # 여러 번 반복되지 않도록 runtime 기본 생성에서는 retry를 끈다.
+    main_llm = llm if llm is not None else get_llm(max_retries=0)
+    chain = build_qa_chain(main_llm)
     try:
         raw_text = chain.invoke(
             {
                 "context": prompt_module.format_context(result),
-                "question": question,
+                "question": safe_question,
             }
         )
     except Exception as error:
-        # Ollama 가 꺼져 있거나 상한 시간을 넘긴 경우. 예외를 그대로 흘리면
-        # 세 갈래로만 끝난다는 약속이 깨지고 부르는 쪽마다 try/except 가 붙는다.
         logger.warning("LLM 호출이 실패했습니다: %s", error, exc_info=True)
         return Answer(
-            question=question,
+            question=safe_question,
             status="abstained",
             text=f"{prompt_module.GENERATION_FAILED_TEXT}\n\n{prompt_module.DISCLAIMER}",
             laws=tuple(result.laws),
@@ -219,17 +463,15 @@ def answer_question(
             guides=tuple(result.guides),
         )
 
-    # 근거는 찾았는데 모델이 답을 못 만든 경우. 대개 사고 과정에 토큰 예산을
-    # 다 써서 답변이 시작되지도 못한 것이다.
     if not raw_text.strip():
         logger.warning(
             "모델이 빈 답변을 반환했습니다. 사고 과정이 토큰 상한(%s)을 모두 "
             "소진했을 가능성이 큽니다. JEONSEON_LLM_MAX_TOKENS 를 늘리거나 "
             "사고 과정 비활성화를 확인하세요.",
-            llm_module.LLM_MAX_TOKENS,   # 값 복사가 아니라 호출 시점 값
+            llm_module.LLM_MAX_TOKENS,
         )
         return Answer(
-            question=question,
+            question=safe_question,
             status="abstained",
             text=f"{prompt_module.GENERATION_FAILED_TEXT}\n\n{prompt_module.DISCLAIMER}",
             laws=tuple(result.laws),
@@ -237,8 +479,10 @@ def answer_question(
             guides=tuple(result.guides),
         )
 
-    return Answer(
-        question=question,
+    # 5) main Qwen이 정확성 우선 원칙과 쉬운 표현 규칙을 함께 적용해
+    # 사용자에게 보낼 최종 본문을 직접 만든다. 별도 재작성 Qwen은 호출하지 않는다.
+    candidate = Answer(
+        question=safe_question,
         status="answered",
         text=f"{raw_text}\n\n{prompt_module.DISCLAIMER}",
         raw_text=raw_text,
@@ -246,3 +490,27 @@ def answer_question(
         cases=tuple(result.cases),
         guides=tuple(result.guides),
     )
+
+    # 6) main Qwen이 만든 최종 본문을 deterministic citation/validation으로
+    # 먼저 검사한다. 명확한 오류가 있으면 semantic judge까지 호출하지 않는다.
+    report = audit_answer(candidate)
+    if not report.is_valid:
+        return _abstained_after_validation(safe_question, result, report)
+
+    # 법령만 근거로 명시한 직접 답변은 citation/value/amount_role 등 deterministic
+    # 검증 결과를 사용한다. 판례·기관 안내를 실제로 인용한 답변만 의미 해석이 더
+    # 필요하므로 semantic judge를 추가 호출한다.
+    citation_report = audit_citations(candidate)
+    needs_semantic_judge = any(
+        mention.kind in {"case", "guide"}
+        for mention in citation_report.mentions
+    )
+    if needs_semantic_judge:
+        report = audit_answer(
+            candidate,
+            semantic_judge=_semantic_judge(get_aux_llm()),
+        )
+        if not report.is_valid:
+            return _abstained_after_validation(safe_question, result, report)
+
+    return candidate
