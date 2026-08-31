@@ -10,11 +10,14 @@ from __future__ import annotations
 import unittest
 
 from src.retrieval.retriever import matches
+from src.retrieval.terms import expand, expand_law
+from src.retrieval.hybrid import DEFAULT_RRF_K
 from src.retrieval.service import (
     CASE,
     COMMERCIAL_LAWS,
     GUIDE,
     LAW,
+    LAW_RRF_K,
     detect_guide_topics,
     Corpus,
     Evidence,
@@ -241,19 +244,35 @@ class DegradedInputTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_corpus_parameters_are_currently_identical(self):
-        """지금 값이 같은 것은 의도한 상태다. 나눈 것은 구조이지 값이 아니다.
-
-        튜닝할 때 이 테스트가 깨지면 그때 기대값을 바꾸면 된다.
-        """
+    def test_corpora_keep_the_same_unmodified_base_parameters(self):
+        """법령 RRF·확장 외의 기존 BM25 설정은 묶음별로 달라지지 않는다."""
         self.assertEqual(LAW.bm25_b, CASE.bm25_b)
         self.assertEqual(LAW.expand_weight, CASE.expand_weight)
 
     def test_tuning_one_corpus_does_not_touch_the_other(self):
-        tuned = Corpus("법령", LAW.doc_types, bm25_b=0.25)
+        tuned = Corpus("법령", LAW.doc_types, bm25_b=0.25, rrf_k=7)
         service = RetrievalService(CHUNKS, None, law=tuned)
         self.assertEqual(service._retrievers["법령"].members[0].retriever.b, 0.25)
+        self.assertEqual(service._retrievers["법령"].rrf_k, 7)
         self.assertEqual(service._retrievers["판례"].members[0].retriever.b, CASE.bm25_b)
+        self.assertEqual(service._retrievers["판례"].rrf_k, DEFAULT_RRF_K)
+
+    def test_law_rrf_tuning_does_not_change_case_or_guide(self):
+        service = build()
+        self.assertEqual(LAW.rrf_k, LAW_RRF_K)
+        self.assertEqual(service._retrievers["법령"].rrf_k, 5)
+        self.assertEqual(service._retrievers["판례"].rrf_k, DEFAULT_RRF_K)
+        self.assertEqual(service._retrievers["안내"].rrf_k, DEFAULT_RRF_K)
+
+    def test_law_context_expansion_does_not_reach_case_or_guide(self):
+        service = build()
+        law_bm25 = service._retrievers["법령"].members[0].retriever
+        case_bm25 = service._retrievers["판례"].members[0].retriever
+        guide_bm25 = service._retrievers["안내"].members[0].retriever
+
+        self.assertIs(law_bm25.query_expander, expand_law)
+        self.assertIs(case_bm25.query_expander, expand)
+        self.assertIs(guide_bm25.query_expander, expand)
 
 
 if __name__ == "__main__":

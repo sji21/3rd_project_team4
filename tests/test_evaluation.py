@@ -10,6 +10,8 @@ from src.evaluation.metrics import (
     standard_error,
 )
 from src.evaluation.run_eval import check_gold_exists, run
+from src.evaluation.compare_hybrid import evaluate as evaluate_hybrid
+from src.evaluation.compare_law_top3 import context_rule_activations, law_questions
 from src.retrieval.retriever import BM25Retriever
 
 
@@ -31,6 +33,14 @@ def _result(qid: str, hit: bool) -> QuestionResult:
         rr=1.0 if hit else 0.0,
         recall=1.0 if hit else 0.0,
     )
+
+
+class _FixedRetriever:
+    def __init__(self, chunk_ids: list[str]) -> None:
+        self.chunk_ids = chunk_ids
+
+    def search(self, query, k, where=None, expand_weight=0.0):
+        return [(chunk_id, 1.0) for chunk_id in self.chunk_ids[:k]]
 
 
 class MetricTests(unittest.TestCase):
@@ -93,6 +103,59 @@ class EvaluationHarnessTests(unittest.TestCase):
         self.assertEqual(1, result.n)
         self.assertEqual(1.0, result.hit_rate)
         self.assertEqual([], result.failures)
+
+    def test_hybrid_report_distinguishes_hit_at_3_from_recall_at_3(self) -> None:
+        chunks = [
+            _chunk("chunk-gold-a", "gold-a", "첫 번째 정답"),
+            _chunk("chunk-other-a", "other-a", "기타"),
+            _chunk("chunk-other-b", "other-b", "기타"),
+            _chunk("chunk-gold-b", "gold-b", "두 번째 정답"),
+        ]
+        questions = [{
+            "qid": "q-multi",
+            "question": "복수 근거 질문",
+            "gold_articles": ["gold-a", "gold-b"],
+        }]
+
+        result = evaluate_hybrid(
+            _FixedRetriever(["chunk-gold-a", "chunk-other-a", "chunk-other-b", "chunk-gold-b"]),
+            chunks,
+            questions,
+        )
+
+        self.assertEqual(1.0, result["hit@3"])
+        self.assertEqual(0.5, result["recall@3"])
+        self.assertEqual(1.0, result["recall@5"])
+        self.assertEqual(["q-multi"], result["partial@3"])
+
+    def test_law_top3_denominator_excludes_non_law_gold(self) -> None:
+        chunks = [
+            {
+                **_chunk("chunk-law", "law-a", "법령"),
+                "metadata": {"article_id": "law-a", "doc_type": "law"},
+            },
+            {
+                **_chunk("chunk-guide", "guide-a", "안내"),
+                "metadata": {"article_id": "guide-a", "doc_type": "guide"},
+            },
+        ]
+        questions = [
+            {"qid": "mixed", "gold_articles": ["law-a", "guide-a"]},
+            {"qid": "guide-only", "gold_articles": ["guide-a"]},
+        ]
+
+        filtered = law_questions(questions, chunks)
+
+        self.assertEqual(["mixed"], [question["qid"] for question in filtered])
+        self.assertEqual(["law-a"], filtered[0]["gold_articles"])
+
+    def test_context_rule_activation_diagnostic_compares_with_shared_expansion(self) -> None:
+        questions = [
+            {"qid": "effect", "question": "확정일자가 없으면 효력이 어떻게 되나요?"},
+            {"qid": "procedure", "question": "확정일자는 어디서 받나요?"},
+        ]
+
+        self.assertEqual(["effect"], context_rule_activations(questions))
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from src.retrieval.retriever import (
     load_chunks,
     tokenize,
 )
+from src.retrieval.terms import expand, expand_law
 
 
 def _chunk(chunk_id: str, article_id: str, text: str) -> dict:
@@ -55,6 +56,65 @@ class BM25RetrieverTests(unittest.TestCase):
 
     def test_empty_corpus_returns_no_results(self) -> None:
         self.assertEqual([], BM25Retriever([]).search("질문", k=5))
+
+    def test_expands_confirmation_date_to_its_legal_effect(self) -> None:
+        chunks = [
+            _chunk("procedure", "procedure", "확정일자 부여기관 신청 절차"),
+            _chunk("fees", "fees", "확정일자 부여 수수료"),
+            _chunk(
+                "priority",
+                "priority",
+                "대항요건을 갖춘 임차인은 보증금을 우선하여 변제받을 우선변제권이 있다",
+            ),
+        ]
+        retriever = BM25Retriever(chunks, query_expander=expand_law)
+
+        plain = [chunk_id for chunk_id, _ in retriever.search("확정일자를 안 받으면", 3)]
+        expanded = [
+            chunk_id
+            for chunk_id, _ in retriever.search("확정일자를 안 받으면", 3, expand_weight=1.0)
+        ]
+
+        self.assertNotIn("priority", plain)
+        self.assertEqual("priority", expanded[0])
+
+    def test_confirmation_date_expansion_uses_concepts_not_article_number(self) -> None:
+        terms = expand_law("확정일자를 안 받으면 어떻게 되나요?")
+
+        self.assertEqual(["우선변제권", "우선하여 변제"], terms)
+        self.assertNotIn("제3조의2", terms)
+
+    def test_confirmation_date_procedure_question_is_not_effect_expanded(self) -> None:
+        self.assertEqual([], expand_law("확정일자는 어디서 받나요?"))
+
+    def test_confirmation_date_effect_variants_are_expanded(self) -> None:
+        for question in (
+            "확정일자 없이도 보증금을 먼저 받을 수 있나요?",
+            "확정일자는 왜 필요한가요?",
+            "확정일자의 효력은 무엇인가요?",
+        ):
+            with self.subTest(question=question):
+                expanded = expand_law(question)
+                self.assertIn("우선변제권", expanded)
+                self.assertIn("우선하여 변제", expanded)
+
+    def test_confirmation_date_procedure_variants_are_not_effect_expanded(self) -> None:
+        for question in (
+            "확정일자는 어디서 받나요?",
+            "확정일자 신청 방법과 수수료가 궁금해요",
+            "신분증 없이 확정일자를 받을 수 있나요?",
+            "임대차계약서 없이 확정일자를 신청할 수 있나요?",
+            "전입신고 없이 확정일자만 받으려면 어디로 가야 하나요?",
+            "확정일자 없이 전입신고만 하려면 어디로 가야 하나요?",
+            "신분증 효력이 없으면 확정일자를 신청할 수 있나요?",
+        ):
+            with self.subTest(question=question):
+                expanded = expand_law(question)
+                self.assertNotIn("우선변제권", expanded)
+                self.assertNotIn("우선하여 변제", expanded)
+
+    def test_law_context_terms_are_not_in_the_shared_expansion(self) -> None:
+        self.assertEqual([], expand("확정일자를 안 받으면 어떻게 되나요?"))
 
     def test_chunk_to_article_maps_metadata(self) -> None:
         self.assertEqual(
