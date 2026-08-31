@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 
@@ -679,6 +680,46 @@ def render_history() -> None:
                 render_assistant_meta(message)
 
 
+def render_live_elapsed_timer() -> None:
+    """질문 처리 중 브라우저에서 경과 시간을 계속 갱신한다.
+
+    answer_question()은 서버 쪽에서 동기적으로 실행되므로 그동안 Streamlit rerun은
+    일어나지 않는다. 대신 iframe 안의 JavaScript가 0.1초마다 독립적으로 시간을
+    갱신해 사용자가 처리 진행 시간을 계속 볼 수 있게 한다.
+    """
+
+    components.html(
+        """
+        <div style="
+            display:flex;
+            align-items:center;
+            gap:8px;
+            font-family:Arial, sans-serif;
+            font-size:14px;
+            color:#647587;
+            padding:2px 0 8px 2px;
+        ">
+          <span>이전 대화와 관련 근거를 확인하고 있어요...</span>
+          <strong id="jeonse-elapsed" style="color:#2176B8;">⏱ 0.0초</strong>
+        </div>
+        <script>
+          const startedAt = performance.now();
+          const timer = document.getElementById("jeonse-elapsed");
+
+          function updateElapsed() {
+            const seconds = (performance.now() - startedAt) / 1000;
+            timer.textContent = `⏱ ${seconds.toFixed(1)}초`;
+          }
+
+          updateElapsed();
+          setInterval(updateElapsed, 100);
+        </script>
+        """,
+        height=42,
+        scrolling=False,
+    )
+
+
 def process_question(question: str) -> None:
     # 현재 질문을 넣기 전 대화만 후속 질문 해석에 사용한다.
     previous_messages = list(st.session_state["chat_messages"])
@@ -698,17 +739,22 @@ def process_question(question: str) -> None:
 
     with st.chat_message("assistant", avatar="🏠"):
         started_at = time.perf_counter()
-        with st.spinner("이전 대화와 관련 근거를 확인하고 있어요..."):
-            try:
-                resolved = resolve_question(question, previous_messages)
-                # RetrievalService를 여기서 먼저 만들지 않는다. answer_question()이
-                # prompt injection/scope를 먼저 검사한 뒤 필요한 질문에만 Retrieval을 연다.
-                answer = answer_question(resolved.standalone)
-            except Exception:
-                # 사용자 화면에는 내부 예외를 숨기되 서버 터미널에는 traceback을 남긴다.
-                logger.exception("Streamlit 질문 처리 중 예외가 발생했습니다.")
-                answer = None
-        elapsed_seconds = time.perf_counter() - started_at
+        timer_slot = st.empty()
+        with timer_slot:
+            render_live_elapsed_timer()
+
+        try:
+            resolved = resolve_question(question, previous_messages)
+            # RetrievalService를 여기서 먼저 만들지 않는다. answer_question()이
+            # prompt injection/scope를 먼저 검사한 뒤 필요한 질문에만 Retrieval을 연다.
+            answer = answer_question(resolved.standalone)
+        except Exception:
+            # 사용자 화면에는 내부 예외를 숨기되 서버 터미널에는 traceback을 남긴다.
+            logger.exception("Streamlit 질문 처리 중 예외가 발생했습니다.")
+            answer = None
+        finally:
+            elapsed_seconds = time.perf_counter() - started_at
+            timer_slot.empty()
 
         if answer is None:
             st.error(

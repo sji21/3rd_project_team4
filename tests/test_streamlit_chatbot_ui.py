@@ -61,8 +61,12 @@ def test_chat_messages_and_statuses_have_distinct_styles():
     assert ".status-refused" in TEXT
 
 
-def test_processing_state_does_not_expose_internal_exception_type():
-    assert "st.spinner" in TEXT
+def test_processing_state_has_live_elapsed_timer_without_internal_exception_type():
+    assert "streamlit.components.v1 as components" in TEXT
+    assert "def render_live_elapsed_timer()" in TEXT
+    assert 'id="jeonse-elapsed"' in TEXT
+    assert "setInterval(updateElapsed, 100)" in TEXT
+    assert "timer_slot.empty()" in TEXT
     assert "오류 유형" not in TEXT
 
 
@@ -112,3 +116,10 @@ def test_streamlit_logs_server_exception_without_showing_details():
     assert "logger = logging.getLogger(__name__)" in TEXT
     assert 'logger.exception("Streamlit 질문 처리 중 예외가 발생했습니다.")' in TEXT
     assert "오류 유형" not in TEXT
+
+
+def test_live_timer_runs_during_blocking_answer_call():
+    timer_pos = TEXT.index("render_live_elapsed_timer()")
+    answer_pos = TEXT.index("answer = answer_question(resolved.standalone)")
+    clear_pos = TEXT.index("timer_slot.empty()")
+    assert timer_pos < answer_pos < clear_pos
