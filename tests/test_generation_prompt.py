@@ -142,13 +142,16 @@ class SystemPromptTests(unittest.TestCase):
         """
         self.assertIn("URL이나 링크를 쓰지 마십시오", prompt_module.SYSTEM_QA)
 
-    def test_caps_length_and_forbids_repetition(self) -> None:
-        # 400자 목표인데 2,300자까지 나왔고, 같은 문장을 여섯 번 반복했다.
+    def test_keeps_answers_concise_without_forcing_truncation(self) -> None:
+        """길이는 제어하되 정확한 조건·예외를 글자 수 때문에 버리게 하면 안 된다."""
         text = prompt_module.SYSTEM_QA
 
-        self.assertIn("400자를 넘기지 마십시오", text)
-        self.assertIn("다시 말하지 마십시오", text)
+        self.assertIn("결론·조건·예외·근거를 중심으로 간결하게", text)
+        self.assertIn("같은 내용의 반복", text)
+        self.assertIn("3~5문장 정도를 권장", text)
+        self.assertIn("중요한 내용을 생략하거나 줄이지 마십시오", text)
         self.assertIn("줄글", text)
+        self.assertNotIn("400자를 넘기지 마십시오", text)
 
     def test_separates_law_and_case_weight(self) -> None:
         self.assertIn("같은 무게로 쓰지 마십시오", prompt_module.SYSTEM_QA)

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from src.generation import chain as chain_module
 from src.generation import prompt as prompt_module
@@ -589,16 +590,48 @@ class RuntimeSafetyIntegrationTests(unittest.TestCase):
         self.assertEqual(main, answer.raw_text)
         self.assertIn(main, answer.text)
 
-    def test_law_only_answer_skips_semantic_judge(self) -> None:
+    def test_law_only_answer_uses_semantic_judge(self) -> None:
         main = "주택임대차보호법 제3조에 따르면 대항력은 그 다음 날부터 생깁니다."
         answer = answer_question(
             QUESTION,
             service=self._stub_with_law(),
-            llm=get_llm(fake_responses=[main]),
+            llm=get_llm(fake_responses=[main, "PASS"]),
         )
 
         self.assertEqual("answered", answer.status)
         self.assertEqual(main, answer.raw_text)
+
+    def test_runtime_auxiliary_llm_uses_160_max_tokens(self) -> None:
+        """보조 분류·semantic judge는 160 token 상한을 사용한다."""
+        main = get_llm(
+            fake_responses=[
+                "주택임대차보호법 제3조에 따르면 대항력은 그 다음 날부터 생깁니다."
+            ]
+        )
+        auxiliary = get_llm(fake_responses=["PASS"])
+
+        with patch.object(chain_module, "get_llm", side_effect=[main, auxiliary]) as factory:
+            answer = answer_question(QUESTION, service=self._stub_with_law())
+
+        self.assertEqual("answered", answer.status)
+        self.assertEqual(2, factory.call_count)
+        self.assertEqual(160, factory.call_args_list[1].kwargs["max_tokens"])
+
+    def test_law_only_semantic_mismatch_is_abstained(self) -> None:
+        main = "주택임대차보호법 제3조에 따르면 주민등록을 마친 당일부터 효력이 생깁니다."
+        answer = answer_question(
+            QUESTION,
+            service=self._stub_with_law(),
+            llm=runtime_llm(
+                main,
+                semantic_label="FAIL\n근거는 그 다음 날부터라고 규정합니다.",
+            ),
+        )
+
+        self.assertEqual("abstained", answer.status)
+        self.assertEqual("", answer.raw_text)
+        self.assertNotIn(main, answer.text)
+        self.assertIn("답변을 보류", answer.text)
 
 class GuideOnEveryExitTests(unittest.TestCase):
     """answered 뿐 아니라 실패 갈래에서도 안내가 실려 나오는가.

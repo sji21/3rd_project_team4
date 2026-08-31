@@ -55,13 +55,28 @@ class SecretFilterResult:
 
 # 키 이름이 명시된 assignment는 값 모양이 일반 문자열이어도 비밀값으로 본다.
 # 빈 값은 .env.example처럼 안전한 템플릿일 수 있으므로 탐지하지 않는다.
-_NAMED_SECRET_RE = re.compile(
-    r"(?P<prefix>"
-    r"(?P<label>"
+_SECRET_LABEL = (
     r"(?:OPENAI_API_KEY|LAW_GO_KR_API_KEY|HF_TOKEN|HUGGINGFACE_TOKEN|"
     r"GITHUB_TOKEN|GITHUB_PAT|SLACK_TOKEN|API_KEY|ACCESS_TOKEN|"
     r"AUTH_TOKEN|CLIENT_SECRET|SECRET_KEY|PASSWORD|PASSWD)"
+)
+
+# PASSWORD="hunter22" 같은 일반적인 따옴표 assignment도 값만 가린다. 따옴표는
+# 남겨 두어 설정 파일 문법을 깨뜨리지 않는다.
+_NAMED_QUOTED_SECRET_RE = re.compile(
+    r"(?P<prefix>"
+    rf"(?P<label>{_SECRET_LABEL})"
+    r"[ \t]*[:=][ \t]*"
     r")"
+    r"(?P<quote>[\"'])"
+    r"(?P<value>[^\r\n]{4,}?)"
+    r"(?P=quote)",
+    re.IGNORECASE,
+)
+
+_NAMED_SECRET_RE = re.compile(
+    r"(?P<prefix>"
+    rf"(?P<label>{_SECRET_LABEL})"
     r"[ \t]*[:=][ \t]*"
     r")"
     r"(?P<value>[^\s,;\"']{4,})",
@@ -106,6 +121,7 @@ _PATTERN_SPECS: tuple[
     tuple[SecretKind, re.Pattern[str], bool],
     ...,
 ] = (
+    ("named_secret", _NAMED_QUOTED_SECRET_RE, True),
     ("named_secret", _NAMED_SECRET_RE, True),
     ("bearer_token", _BEARER_RE, True),
     ("openai_key", _OPENAI_KEY_RE, False),

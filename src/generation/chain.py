@@ -41,7 +41,6 @@ from langchain_core.runnables import Runnable, RunnableLambda
 from src.document_check.privacy import mask_sensitive_text
 from src.generation import llm as llm_module
 from src.generation import prompt as prompt_module
-from src.generation.citation import audit_citations
 from src.generation.abstention import (
     SCOPE_JUDGE_SYSTEM,
     build_scope_judge_prompt,
@@ -393,7 +392,7 @@ def answer_question(
             # 동일 Qwen을 쓰되 보조 호출의 폭주를 막는다.
             runtime_aux_llm = get_llm(
                 temperature=0.0,
-                max_tokens=96,
+                max_tokens=160,
                 timeout=90,
                 max_retries=0,
             )
@@ -497,20 +496,15 @@ def answer_question(
     if not report.is_valid:
         return _abstained_after_validation(safe_question, result, report)
 
-    # 법령만 근거로 명시한 직접 답변은 citation/value/amount_role 등 deterministic
-    # 검증 결과를 사용한다. 판례·기관 안내를 실제로 인용한 답변만 의미 해석이 더
-    # 필요하므로 semantic judge를 추가 호출한다.
-    citation_report = audit_citations(candidate)
-    needs_semantic_judge = any(
-        mention.kind in {"case", "guide"}
-        for mention in citation_report.mentions
+    # deterministic 검사는 출처·숫자·직접 인용처럼 형태가 명확한 오류를 잘 잡지만,
+    # "그 다음 날부터"를 "당일부터"로 바꾸는 식의 의미 변형은 법령 답변에서도
+    # 놓칠 수 있다. 따라서 근거 종류와 무관하게 deterministic 검증을 통과한 모든
+    # 최종 답변을 semantic judge가 한 번 더 확인한다.
+    report = audit_answer(
+        candidate,
+        semantic_judge=_semantic_judge(get_aux_llm()),
     )
-    if needs_semantic_judge:
-        report = audit_answer(
-            candidate,
-            semantic_judge=_semantic_judge(get_aux_llm()),
-        )
-        if not report.is_valid:
-            return _abstained_after_validation(safe_question, result, report)
+    if not report.is_valid:
+        return _abstained_after_validation(safe_question, result, report)
 
     return candidate
