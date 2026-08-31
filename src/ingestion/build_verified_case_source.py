@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from src.ingestion.parse_cases import clean
+from src.ingestion.parse_cases import clean, write_json_atomically
 from src.ingestion.refetch_case_details import fetch_detail, oc_from_environment, write_jsonl_atomically
 
 
@@ -17,6 +17,12 @@ class VerifiedSourceSummary:
     candidates: int = 0
     accepted: int = 0
     unavailable: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def can_publish(self) -> bool:
+        """모든 후보를 완전한 공식 상세 응답으로 확보했을 때만 발행한다."""
+
+        return self.candidates > 0 and self.accepted == self.candidates and not self.unavailable
 
 
 def unique_candidate_ids(paths: list[Path]) -> list[str]:
@@ -59,6 +65,19 @@ def build_verified_source(case_ids: list[str], *, oc: str, delay: float) -> tupl
     return records, summary
 
 
+def publish_verified_source(
+    *, records: list[dict[str, object]], summary: VerifiedSourceSummary,
+    output_path: Path, report_path: Path,
+) -> bool:
+    """완전 수집일 때만 원천을 교체하고, 보고서는 항상 남긴다."""
+
+    published = summary.can_publish
+    write_json_atomically({**asdict(summary), "published": published}, report_path)
+    if published:
+        write_jsonl_atomically(records, output_path)
+    return published
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="공개 API 검증 판례 상세 원천 생성")
     parser.add_argument("--candidates", required=True, nargs="+", help="후보 JSONL(복수 가능)")
@@ -75,11 +94,15 @@ def main() -> int:
         delay=args.delay,
     )
     output_path, report_path = Path(args.output), Path(args.report)
-    write_jsonl_atomically(records, output_path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(json.dumps(asdict(summary), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    published = publish_verified_source(
+        records=records, summary=summary, output_path=output_path, report_path=report_path,
+    )
     print(f"공식 검증 후보 {summary.candidates}건 -> 사용 가능 {summary.accepted}건 · 수집 불가 {len(summary.unavailable)}건")
-    print(f"원천: {output_path}\n보고서: {report_path}")
+    print(f"보고서: {report_path}")
+    if not published:
+        print("수집 실패가 있어 기존 원천 파일을 변경하지 않았습니다.")
+        return 1
+    print(f"원천: {output_path}")
     return 0
 
 

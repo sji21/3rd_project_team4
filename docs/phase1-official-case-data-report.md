@@ -3,7 +3,8 @@
 ## 기준과 범위
 
 - 기준 커밋: `origin/main`의 `f4cd49a` (PATCH-021 포함)
-- 작업 브랜치: `feat/patch-022-case-data-ingestion`
+- 작업 브랜치: `fix/patch-023-review-hardening`
+- 작업 패치: `PATCH-023` (PATCH-022 리뷰 보완)
 - 출처: 국가법령정보 공동활용 OPEN API의 공식 판례 상세정보
 - 대상: 주택임대차 관련 민사 판례의 공식 판결요지
 - 청크 규칙: 판례 1건 = 청크 1개
@@ -58,10 +59,16 @@ SQLite를 읽기 전용으로 점검한 결과, 사건번호 중복은 0건이�
 `phase1_official_case_details.verified.jsonl`에 기록했다. 나머지 194건은 수집 불가 보고서에
 분리했다(판결요지 미제공 120건, 판례 상세 응답 미반환 74건).
 
-검증 원천 154건을 엄격 변환한 결과는 자동 적재 13건·범위 제외 68건·수동 검토 73건·오류
-0건·충돌 0건이다. 따라서 `case_records.verified.jsonl` 13건은 안전하게 발행됐고, 별도
-스테이징 SQLite와 청크도 각각 13건으로 적재·규격 검사를 통과했다. 이 결과는 과거 207건을
-대체하는 현재의 **공개 API 검증 기준선**이며, 운영 통합 DB에는 아직 반영하지 않았다.
+검증 원천 154건을 엄격 변환한 초기 결과는 자동 적재 13건·범위 제외 68건·수동 검토 73건·오류
+0건·충돌 0건이다. 이는 **PATCH-023 공개 API 초기 검증 기준선**이며, 과거 207건은 PATCH-022의
+검토 전 역사적 스테이징 기록이다.
+
+제공된 `case_records.residential_review_classification.csv`를 적용한 2026-08-30 로컬 재변환에서는
+수동 검토 73건 중 승인 7건만 추가했다. 제외 39건은 `excluded`, 보류 27건은 `needs_review`로 남겼다.
+그 결과 현재 `case_records.verified.jsonl`은 **20건**(초기 자동 13건 + 수동 승인 7건), 제외 107건,
+보류 27건, 오류 0건, 충돌 0건이다. 이 20건 검증 파일만 운영·평가 입력으로 사용하며, 운영 통합
+DB에는 아직 반영하지 않았다. 로컬 별도 스테이징 SQLite와 청크도 각각 20건으로 다시 적재했고
+청크 규격 검사를 통과했다.
 
 ## 최신 main과의 호환성
 
@@ -85,7 +92,7 @@ SQLite를 읽기 전용으로 점검한 결과, 사건번호 중복은 0건이�
 
 ```powershell
 python -m src.ingestion.load_cases `
-  --records data/parsed/case_records.jsonl `
+  --records data/parsed/case_records.verified.jsonl `
   --database data/database/knowledge.sqlite3 `
   --export data/chunks/cases.jsonl
 
@@ -103,8 +110,9 @@ python -m src.retrieval.index `
 키워드 정답군 기준의 과거 스모크 테스트다. 이 파일의 Hit@1 73.68%, Hit@5 84.21%, MRR 0.7807은
 현재 207건 코퍼스 또는 최신 main의 통합 검색 성능을 의미하지 않는다.
 
-따라서 운영 동기화 전에는 207건 입력과 실제 법령 청크를 함께 사용해 질문·정답 판례번호가
-확정된 수동 평가를 다시 실행하고, 그 결과를 별도 보고서에 기록해야 한다. 특히 최우선변제,
+따라서 운영 동기화 전에는 현재 검증된 `case_records.verified.jsonl`과 실제 법령 청크를 함께
+사용해 질문·정답 판례번호가 확정된 수동 평가를 다시 실행하고, 그 결과를 별도 보고서에 기록해야
+한다. 특히 최우선변제,
 확정일자·우선변제, 임차권등기명령은 이전 스모크 테스트에서 정답 누락이 있었으므로 재확인 대상이다.
 
 ## 이번 기준 정리의 결론

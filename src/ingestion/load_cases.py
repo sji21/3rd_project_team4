@@ -16,6 +16,7 @@ import sqlite3
 import tempfile
 from contextlib import closing
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from pathlib import Path
 
 from src.database.config import resolve_database_paths
@@ -61,6 +62,11 @@ class CaseRecord:
                 problems.append(f"{name} 이 비어 있음")
         if not _DATE.match(self.decision_date):
             problems.append(f"decision_date '{self.decision_date}' 는 YYYY-MM-DD 형식이 아님")
+        else:
+            try:
+                date.fromisoformat(self.decision_date)
+            except ValueError:
+                problems.append(f"decision_date '{self.decision_date}' 는 실제 달력 날짜가 아님")
         if self.status not in {"current", "historical", "repealed"}:
             problems.append(f"status '{self.status}' 는 허용값이 아님")
         if self.summary_type not in {"official", "generated"}:

@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from src.ingestion.build_verified_case_source import build_verified_source, unique_candidate_ids
+from src.ingestion.build_verified_case_source import (
+    VerifiedSourceSummary,
+    build_verified_source,
+    main as build_verified_source_main,
+    publish_verified_source,
+    unique_candidate_ids,
+)
 from src.ingestion.refetch_case_details import oc_from_environment, refetch_records
 from src.ingestion.resolve_case_ids import Candidate, exact_matches, resolve_candidates
 
@@ -70,6 +77,48 @@ def test_verified_source_deduplicates_candidate_ids_and_reports_unavailable(tmp_
     assert [record["case_id"] for record in records] == ["official-1"]
     assert summary.candidates == 2 and summary.accepted == 1
     assert summary.unavailable[0]["case_id"] == "2"
+
+
+def test_partial_verified_collection_preserves_existing_output_and_fails_publication(tmp_path: Path) -> None:
+    output_path = tmp_path / "verified.jsonl"
+    report_path = tmp_path / "verified.report.json"
+    output_path.write_text("existing-154-records\n", encoding="utf-8")
+    records = [{"case_id": str(index), "service": detail_service()} for index in range(100)]
+    summary = VerifiedSourceSummary(
+        candidates=154,
+        accepted=100,
+        unavailable=[{"case_id": str(index), "source_url": "", "reason": "API 요청 실패"} for index in range(54)],
+    )
+
+    assert not publish_verified_source(
+        records=records, summary=summary, output_path=output_path, report_path=report_path,
+    )
+    assert output_path.read_text(encoding="utf-8") == "existing-154-records\n"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["published"] is False
+    assert report["accepted"] == 100 and len(report["unavailable"]) == 54
+
+
+def test_partial_verified_collection_cli_returns_one(tmp_path: Path, monkeypatch) -> None:
+    output_path = tmp_path / "verified.jsonl"
+    report_path = tmp_path / "verified.report.json"
+    output_path.write_text("existing-154-records\n", encoding="utf-8")
+    summary = VerifiedSourceSummary(
+        candidates=154,
+        accepted=100,
+        unavailable=[{"case_id": str(index), "source_url": "", "reason": "API 요청 실패"} for index in range(54)],
+    )
+    monkeypatch.setattr("src.ingestion.build_verified_case_source.unique_candidate_ids", lambda paths: ["1"] * 154)
+    monkeypatch.setattr("src.ingestion.build_verified_case_source.oc_from_environment", lambda path: "test-oc")
+    monkeypatch.setattr("src.ingestion.build_verified_case_source.build_verified_source", lambda *args, **kwargs: ([], summary))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build_verified_case_source", "--candidates", "candidates.jsonl", "--output", str(output_path), "--report", str(report_path)],
+    )
+
+    assert build_verified_source_main() == 1
+    assert output_path.read_text(encoding="utf-8") == "existing-154-records\n"
 
 
 def test_resolver_requires_unique_exact_match(monkeypatch) -> None:
