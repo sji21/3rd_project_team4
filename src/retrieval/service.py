@@ -13,10 +13,10 @@ IDF 가 코퍼스 전체 기준이라 "대항력"의 희소성이 법령 133 조
 `doc_type` 필터로 가른다. 벡터는 문서마다 독립적이라 쪼갤 이유가 없고, 쪼개면
 컬렉션이 늘어 적재만 번거로워진다.
 
-파라미터는 지금 양쪽이 같다. **나눠 둔 것은 구조이지 값이 아니다.** 측정 결과
-법령은 b=0.25, 판례는 b=0.75 가 좋았는데(긴 조문이 알맹이인 법령과 달리 판례는
-길이를 눌러야 한다) 그 튜닝은 실데이터가 들어온 뒤로 미룬다. 그때 아래 `LAW`/
-`CASE` 설정값만 바꾸면 된다.
+묶음별 파라미터는 독립적이다. 생성 모델이 법령 상위 3건만 쓰는 현재 계약에서는
+법령 RRF의 상위 순위 집중도를 높여야 정답 조문이 4위에서 잘리지 않았다. 판례 쪽은
+공식 원문 평가가 끝나지 않았으므로 기존값을 유지한다. 이후 튜닝도 아래 `LAW`/`CASE`
+설정값만 바꾸면 된다.
 """
 
 from __future__ import annotations
@@ -25,19 +25,21 @@ import re
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Callable
 
 from src.retrieval.dense import (
     DenseRetriever,
     EmbeddingBackend,
     SentenceTransformerEmbedding,
 )
-from src.retrieval.hybrid import HybridRetriever, Member
+from src.retrieval.hybrid import DEFAULT_RRF_K, HybridRetriever, Member
 from src.retrieval.retriever import (
     _WORD_RE,
     BM25Retriever,
     Retriever,
     load_chunks,
 )
+from src.retrieval.terms import expand, expand_law
 
 DEFAULT_MODEL = "nlpai-lab/KURE-v1"
 DEFAULT_INDEX = Path("data/index/chroma_kurev1_1024")
@@ -60,7 +62,8 @@ _HEADER = re.compile(r"^\[.+?\]")
 class Corpus:
     """한 묶음의 검색 설정.
 
-    두 묶음의 값이 지금 같은 것은 의도한 상태다. 튜닝 전까지 기본값을 쓴다.
+    검색 파라미터와 질의 확장을 묶음별로 분리한다. 법령에 필요한 보강이 평가되지
+    않은 판례·안내 순위에 번지지 않아야 한다.
     """
 
     name: str
@@ -69,6 +72,8 @@ class Corpus:
     expand_weight: float = 1.0
     bm25_weight: float = 1.0
     dense_weight: float = 1.0
+    rrf_k: int = DEFAULT_RRF_K
+    query_expander: Callable[[str], list[str]] = expand
     exclude_titles: tuple[str, ...] = ()
     status: str = "current"
     include_ids: tuple[str, ...] = ()   # 이 article_id 만 (안내 주제 한정에 쓴다)
@@ -104,7 +109,14 @@ GUIDE_HEADER = (
     "안내인지 밝혀 주세요.\n"
 )
 
-LAW = Corpus("법령", LAW_TYPES)
+LAW_RRF_K = 5
+
+# 생성 모델에 법령 3건만 넘길 때 dev-003·008의 정답이 기존 k=60에서는 4위로
+# 잘렸다. 후보 깊이와 가중치는 그대로 두고 k만 5로 낮추면 두 문항이 3위가 되며,
+# 현재 법령 채점 24문항의 Hit@1은 유지되고 Hit@3은 22/24 -> 24/24가 된다.
+# 이후 법령 문맥 확장은 Hit@3을 유지하면서 Recall@3을 97.9% -> 100%로 만든다.
+# 판례는 공식 원문 평가 전이므로 이 값을 공유하지 않는다.
+LAW = Corpus("법령", LAW_TYPES, rrf_k=LAW_RRF_K, query_expander=expand_law)
 CASE = Corpus("판례", CASE_TYPES)
 
 # 공식 안내를 따로 두는 이유가 있다. HUG 상품안내나 국세청 민원안내는 **법적 근거가
@@ -376,7 +388,11 @@ class RetrievalService:
             return None
         members = [
             Member(
-                BM25Retriever(chunks, b=corpus.bm25_b),
+                BM25Retriever(
+                    chunks,
+                    b=corpus.bm25_b,
+                    query_expander=corpus.query_expander,
+                ),
                 f"{corpus.name}-bm25",
                 corpus.bm25_weight,
                 corpus.expand_weight,
@@ -386,7 +402,7 @@ class RetrievalService:
             members.append(
                 Member(self.dense, f"{corpus.name}-dense", corpus.dense_weight, 0.0)
             )
-        return HybridRetriever(members)
+        return HybridRetriever(members, rrf_k=corpus.rrf_k)
 
     @classmethod
     def from_index(

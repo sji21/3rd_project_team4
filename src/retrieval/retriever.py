@@ -18,7 +18,7 @@ import math
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Callable, Iterable, Protocol
 
 from src.retrieval.terms import expand
 
@@ -108,11 +108,13 @@ class BM25Retriever:
         k1: float = 1.5,
         b: float = 0.75,
         char_ngram: int = 2,
+        query_expander: Callable[[str], list[str]] = expand,
     ) -> None:
         self.chunks = chunks
         self.k1 = k1
         self.b = b
         self.char_ngram = char_ngram
+        self.query_expander = query_expander
 
         self.chunk_ids = [c["chunk_id"] for c in chunks]
         self.doc_tokens = [tokenize(c["text"], char_ngram) for c in chunks]
@@ -145,7 +147,7 @@ class BM25Retriever:
             (t, 1.0) for t in tokenize(query, self.char_ngram)
         ]
         if expand_weight > 0:
-            for added in expand(query):
+            for added in self.query_expander(query):
                 q_terms += [
                     (t, expand_weight) for t in tokenize(added, self.char_ngram)
                 ]
