@@ -60,6 +60,11 @@ result.is_empty()            # 근거를 하나도 못 찾았을 때 ABSTAIN 판
 평가셋에서 재검증해야 합니다. 재현 명령은 `python -m src.evaluation.compare_law_top3`,
 원자료는 `data/eval/runs/law-top3-comparison.json`입니다.
 
+문맥 확장은 `"없이"` 같은 일반 낱말만으로 켜지지 않습니다. `확정일자 없이`처럼
+부정 대상을 직접 확인한 뒤 신청·발급·서류·수수료 등의 절차 신호가 있으면 차단합니다.
+우선변제·효력처럼 효과 의도가 명시된 질문은 절차 표현이 함께 있어도 효과 근거를
+보강합니다.
+
 ### Evidence 필드
 
 | 필드 | 내용 |

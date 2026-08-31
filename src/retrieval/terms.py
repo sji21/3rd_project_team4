@@ -98,14 +98,79 @@ TERM_MAP: dict[str, tuple[str, ...]] = {
 @dataclass(frozen=True)
 class ContextTermRule:
     subject: str
-    signals: tuple[str, ...]
+    absence_phrases: tuple[str, ...]
+    effect_signals: tuple[str, ...]
+    procedure_signals: tuple[str, ...]
     additions: tuple[str, ...]
+
+    def matches(self, query: str) -> bool:
+        """효과 의도이거나, 절차 질문이 아닌 확정일자 부재 질문일 때만 참이다."""
+        if self.subject not in query:
+            return False
+        asks_effect = any(signal in query for signal in self.effect_signals)
+        subject_is_absent = any(phrase in query for phrase in self.absence_phrases)
+        asks_procedure = any(signal in query for signal in self.procedure_signals)
+        return asks_effect or (subject_is_absent and not asks_procedure)
 
 
 CONTEXT_TERM_RULES: tuple[ContextTermRule, ...] = (
     ContextTermRule(
         subject="확정일자",
-        signals=("안 받", "받지 않", "없이", "없으면", "없는", "왜 필요", "필요한 이유", "효력"),
+        # "없이"처럼 문장 어디에나 걸리는 낱말은 쓰지 않는다. 무엇이 없는지를
+        # 확정일자에 직접 묶어 신분증·계약서·전입신고 부재 질문과 구분한다.
+        absence_phrases=(
+            "확정일자를 안 받",
+            "확정일자 안 받",
+            "확정일자를 받지 않",
+            "확정일자 받지 않",
+            "확정일자 없이",
+            "확정일자가 없",
+            "확정일자 없는",
+            "확정일자도 없",
+        ),
+        effect_signals=(
+            "확정일자는 왜 필요",
+            "확정일자가 왜 필요",
+            "확정일자 왜 필요",
+            "확정일자가 필요한 이유",
+            "확정일자를 받아야 하는 이유",
+            "확정일자의 효력",
+            "확정일자 효력",
+            "우선변제",
+            "보증금을 먼저 받",
+            "보호받",
+            "보호 받",
+            "보증금 보호",
+            "보증금을 지키",
+            "경매에서",
+            "공매에서",
+            "배당받",
+            "후순위",
+        ),
+        procedure_signals=(
+            "신청",
+            "발급",
+            "부여",
+            "교부",
+            "접수",
+            "방문",
+            "온라인",
+            "어디",
+            "어느 기관",
+            "방법",
+            "절차",
+            "수수료",
+            "비용",
+            "준비물",
+            "필요 서류",
+            "신분증",
+            "계약서",
+            "주민센터",
+            "등기소",
+            "받으려",
+            "받는 법",
+            "받을 수 있",
+        ),
         additions=("우선변제권", "우선하여 변제"),
     ),
 )
@@ -134,7 +199,7 @@ def expand_law(query: str) -> list[str]:
     """
     found = expand(query)
     for rule in CONTEXT_TERM_RULES:
-        if rule.subject in query and any(signal in query for signal in rule.signals):
+        if rule.matches(query):
             for term in rule.additions:
                 if term not in found and term not in query:
                     found.append(term)

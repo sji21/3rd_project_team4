@@ -5,6 +5,7 @@
 ### Changed
 
 - PATCH-026 aligns law retrieval with Qwen3-8B's top-three evidence contract. Law-only RRF now uses `rrf_k=5` while case and guide retrieval remain at 60, raising service-index law Hit@3 from 91.7% to 100% without changing Hit@1. A law-only contextual expansion for confirmation-date effects then raises law-scoped Recall@3 from 97.9% to 100%. The rule fired for only `dev-001` among the 42 observed dev/holdout questions, so this is documented as a limited fix rather than generalization evidence; new effect/procedure variants remain a follow-up. (commit: pending)
+- Hardened PATCH-026's contextual matcher after review: generic `"without"` no longer activates the effect expansion. Absence must be attached to the confirmation date, and application, issuance, document, and fee signals block the expansion unless the question explicitly asks about legal effect. Regression tests cover missing-ID, missing-contract, and missing-move-in-report procedure questions. (commit: pending)
 
 ## 2026-08-30
 

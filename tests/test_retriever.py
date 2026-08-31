@@ -102,9 +102,16 @@ class BM25RetrieverTests(unittest.TestCase):
         for question in (
             "확정일자는 어디서 받나요?",
             "확정일자 신청 방법과 수수료가 궁금해요",
+            "신분증 없이 확정일자를 받을 수 있나요?",
+            "임대차계약서 없이 확정일자를 신청할 수 있나요?",
+            "전입신고 없이 확정일자만 받으려면 어디로 가야 하나요?",
+            "확정일자 없이 전입신고만 하려면 어디로 가야 하나요?",
+            "신분증 효력이 없으면 확정일자를 신청할 수 있나요?",
         ):
             with self.subTest(question=question):
-                self.assertEqual([], expand_law(question))
+                expanded = expand_law(question)
+                self.assertNotIn("우선변제권", expanded)
+                self.assertNotIn("우선하여 변제", expanded)
 
     def test_law_context_terms_are_not_in_the_shared_expansion(self) -> None:
         self.assertEqual([], expand("확정일자를 안 받으면 어떻게 되나요?"))
