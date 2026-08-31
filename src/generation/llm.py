@@ -51,7 +51,7 @@ LLM_API_KEY = os.getenv("JEONSEON_LLM_API_KEY", "ollama")  # 호환성용. nativ
 
 LLM_TEMPERATURE = _env_number("JEONSEON_LLM_TEMPERATURE", "0.2", float)
 LLM_TIMEOUT = _env_number("JEONSEON_LLM_TIMEOUT", "180", float)
-LLM_MAX_TOKENS = _env_number("JEONSEON_LLM_MAX_TOKENS", "1200", int)
+LLM_MAX_TOKENS = _env_number("JEONSEON_LLM_MAX_TOKENS", "256", int)
 LLM_KEEP_ALIVE = os.getenv("JEONSEON_LLM_KEEP_ALIVE", "30m").strip() or "30m"
 
 
