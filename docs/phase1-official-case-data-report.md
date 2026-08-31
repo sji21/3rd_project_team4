@@ -14,7 +14,7 @@
 
 | 항목 | 실제 수량 | 경로 |
 | --- | ---: | --- |
-| 최종 공식 후보 목록 | 348건 | `data/raw/final_phase_official_case_candidates.jsonl` |
+| 최종 공식 후보 목록 | 348건 | 당시 최초 검증 실행의 후보 목록(현재 입력과 다름) |
 | 공식 상세 응답 | 517건 | `data/raw/phase1_official_case_details.jsonl` |
 | 표준 적재 대상 `CaseRecord` | 207건 | `data/parsed/case_records.jsonl` (검토 전 기준선) |
 | 스테이징 SQLite 판례 | 207건 | `data/database/phase1_official_cases.sqlite3` |
@@ -59,11 +59,18 @@ SQLite를 읽기 전용으로 점검한 결과, 사건번호 중복은 0건이�
 `phase1_official_case_details.verified.jsonl`에 기록했다. 나머지 194건은 수집 불가 보고서에
 분리했다(판결요지 미제공 120건, 판례 상세 응답 미반환 74건).
 
+이 348건은 최초 검증 실행의 역사적 수치다. 상세 응답을 전혀 반환하지 않은 74건은 최종 후보 입력에서
+제외해 현재 `data/raw/final_phase_official_case_candidates.jsonl`은 **274건**이다. 이 변경된 데이터로
+재검증한 결과는 완전 응답 154건·`information_missing` 120건·수집 불가 0건·동일성 불일치 0건이며
+`published: true`다. 남은 120건은 `case_id` 필수 일치와 사건번호·법원명·선고일 중 두 개 이상 일치가
+확인될 때만 정보 부족으로 분류한다. 이 상태는 “판결요지가 없습니다. 원문을 확인해주세요.”로 MVP에
+표시할 수 있지만, 검색·생성용 판례 코퍼스에는 넣지 않는다.
+
 검증 원천 154건을 엄격 변환한 초기 결과는 자동 적재 13건·범위 제외 68건·수동 검토 73건·오류
 0건·충돌 0건이다. 이는 **PATCH-023 공개 API 초기 검증 기준선**이며, 과거 207건은 PATCH-022의
 검토 전 역사적 스테이징 기록이다.
 
-제공된 `case_records.residential_review_classification.csv`를 적용한 2026-08-30 로컬 재변환에서는
+제공된 `case_records.residential_review_classification.csv`를 `case_id` 기준으로 적용한 2026-08-30 로컬 재변환에서는
 수동 검토 73건 중 승인 7건만 추가했다. 제외 39건은 `excluded`, 보류 27건은 `needs_review`로 남겼다.
 그 결과 현재 `case_records.verified.jsonl`은 **20건**(초기 자동 13건 + 수동 승인 7건), 제외 107건,
 보류 27건, 오류 0건, 충돌 0건이다. 이 20건 검증 파일만 운영·평가 입력으로 사용하며, 운영 통합
