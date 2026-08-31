@@ -137,9 +137,6 @@ _MARKET_LOOKUP_CUES = (
     "조회",
     "찾아",
     "알려",
-    "현재",
-    "요즘",
-    "지금",
 )
 
 _IN_SCOPE_CUES = (
@@ -160,19 +157,7 @@ _IN_SCOPE_CUES = (
     "월세",
     "반전세",
     "월차임",
-    "계약서",
-    "계약기간",
-    "자동 연장",
-    "계약 연장",
-    "갱신",
-    "경매",
-    "채권자",
-    "특약",
     "미납국세",
-    "세금",
-    "조정",
-    "보증 제도",
-    "보증제도",
 )
 
 
@@ -194,6 +179,16 @@ _JEONSE_PRICE_PATTERNS = (
         r"(?:얼마|조회|찾아|알려|어때|어떻게|어느\s*정도|수준)",
         re.IGNORECASE,
     ),
+)
+
+# "시세가 어떻게 되나요?"처럼 조회 동사가 명시되지 않은 자연어 질문도
+# 가격 명사 바로 뒤의 표현만 본다. 문장 뒤쪽의 법률 질문(예: 우선변제는
+# 어떻게 되나요?)까지 끌어와 시세 조회로 오탐하지 않도록 거리를 짧게 제한한다.
+_MARKET_DESCRIPTION_PATTERN = re.compile(
+    r"(?:시세|실거래가|매매가|전세가격|전세\s+가격|시장가격|시장\s+가격)"
+    r"\s*(?:가|는|를|도)?\s*"
+    r"(?:어때|어떻게|어느\s*정도|수준)",
+    re.IGNORECASE,
 )
 
 
@@ -245,6 +240,8 @@ def _is_market_price_lookup(question: str) -> bool:
         return True
 
     normalized = _normalize(question)
+    if _MARKET_DESCRIPTION_PATTERN.search(normalized) is not None:
+        return True
     return any(pattern.search(normalized) is not None for pattern in _JEONSE_PRICE_PATTERNS)
 
 

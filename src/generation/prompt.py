@@ -132,7 +132,13 @@ HUMAN_QA = """[참고 자료]
 {context}
 
 [질문]
-{question}"""
+{question}
+
+[최종 출력 전 확인]
+- 첫 문장 또는 두 번째 문장에 위 참고 자료 중 실제로 사용한 출처명을 최소 1개 그대로 적으십시오.
+- 참고 자료에 없는 숫자·연도·날짜·기간·금액은 절대 추가하지 마십시오.
+- 기관 안내를 근거로 답한다면 어느 기관의 안내인지 반드시 밝히십시오.
+- 참고 자료에 없는 `현재 기준`, `최근`, 특정 연도 같은 시점 표현을 임의로 만들지 마십시오."""
 
 # ★ 시스템 메시지가 아니라 사용자 턴 끝에 붙인다. Qwen3 문서가 정한 자리이고,
 # 시스템 프롬프트에 두었을 때는 무시되어 사고 과정이 토큰을 다 쓰고 답변이 비었다.
@@ -168,18 +174,76 @@ def build_qa_prompt() -> ChatPromptTemplate:
     )
 
 
+_LAW_DOC_TYPES = frozenset({"law", "decree", "rule"})
+
+
+def _guide_source_name(citation: str) -> str:
+    """기관 안내를 답변에서 그대로 복사해 쓸 수 있는 출처명으로 정리한다."""
+
+    citation = (citation or "").strip()
+    upper = citation.upper()
+
+    if "주택도시보증공사" in citation or "HUG" in upper:
+        return "주택도시보증공사 안내"
+    if "국세청" in citation or "NTS" in upper:
+        return "국세청 안내"
+
+    agency = citation.split("(", 1)[0].strip()
+    if not agency:
+        return "기관 안내"
+    if agency.endswith(("안내", "자료", "가이드")):
+        return agency
+    return f"{agency} 안내"
+
+
+def _answer_source_names(result: RetrievalResult) -> str:
+    """Qwen이 답변에 써야 할 출처명을 본문과 별도로 짧게 보여 준다.
+
+    검색 결과 본문은 RetrievalResult.as_prompt_context()를 그대로 유지한다.
+    여기서는 출처명만 한 번 더 정리해, 작은 모델이 기관명·조문명을 추측하거나
+    생략하지 않고 그대로 복사할 수 있게 한다.
+    """
+
+    groups = (
+        ("관련 법령", result.laws),
+        ("관련 판례", result.cases),
+        ("관련 기관 안내", result.guides),
+    )
+    lines = ["[답변에 쓸 출처명]"]
+
+    for title, evidences in groups:
+        names = []
+        for evidence in evidences:
+            if evidence.doc_type in _LAW_DOC_TYPES or evidence.doc_type == "case":
+                name = (evidence.citation or "").strip()
+            elif evidence.doc_type == "guide":
+                name = _guide_source_name(evidence.citation)
+            else:
+                continue
+
+            if name and name not in names:
+                names.append(name)
+
+        if names:
+            lines.append(f"- {title}: " + " / ".join(names))
+
+    return "\n".join(lines)
+
+
 def format_context(result: RetrievalResult) -> str:
     """검색 결과를 프롬프트에 넣을 문자열로 만든다.
 
-    조립 자체는 검색 쪽 `RetrievalResult.as_prompt_context()` 에 맡긴다. 청크
-    본문이 이미 `[법령명 제N조(제목)]` 헤더로 시작하는지 확인해 출처를 두 번
-    붙이지 않는 규칙이 그 안에 들어 있어서, 여기서 다시 만들면 그 규칙이 갈라진다.
+    실제 검색 본문 조립은 검색 쪽 `RetrievalResult.as_prompt_context()` 에 맡긴다.
+    Generation 쪽에서는 그 앞에 `[답변에 쓸 출처명]` 블록만 붙인다. 이렇게 하면
+    Retrieval의 청크/검색 규칙은 건드리지 않으면서도 Qwen이 법령명·판례·기관명을
+    추측하지 않고 답변에 그대로 복사할 수 있다.
 
-    ★ 그 문자열 안의 `[1]` `[2]` 는 **묶음 안에서의 순번**이라 법령·판례·안내
-      세 묶음에 모두 1번이 있다. 그래서 프롬프트는 번호로 인용하게 하지 않고
-      이름으로 인용하게 한다(SYSTEM_QA 6번 규칙). 번호로 인용하게 하면 `[1]` 이
-      어느 묶음인지 알 수 없어 인용 검증도 화면 링크도 붙일 수 없다.
+    ★ 검색 본문의 `[1]` `[2]` 는 **묶음 안에서의 순번**이라 법령·판례·안내
+      세 묶음에 모두 1번이 있다. 따라서 최종 답변은 번호가 아니라 위 출처명을
+      사용해야 한다(SYSTEM_QA 6번 규칙).
     """
     if result.is_empty():
         return "검색된 자료가 없습니다."
-    return result.as_prompt_context()
+
+    source_names = _answer_source_names(result)
+    return f"{source_names}\n\n{result.as_prompt_context()}"

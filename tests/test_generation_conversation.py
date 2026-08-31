@@ -116,3 +116,29 @@ def test_known_followup_prefixes():
     assert needs_conversation_context("그 특약은 효력이 있어?")
     assert needs_conversation_context("아까 말한 건 언제까지 해야 해?")
     assert not needs_conversation_context("임차권등기명령은 언제 신청할 수 있나요?")
+
+
+def test_rewrite_that_changes_application_to_completion_is_rejected():
+    result = resolve_question(
+        "그럼 신청하면 바로 이사 가도 돼?",
+        answered_history(),
+        rewriter=lambda _history, _question: (
+            "임차권등기명령이 완료된 후 바로 이사해도 되나요?"
+        ),
+    )
+
+    assert result.standalone == "그럼 신청하면 바로 이사 가도 돼?"
+    assert result.used_history is False
+
+
+def test_rewrite_cannot_invent_number_not_in_conversation():
+    result = resolve_question(
+        "그럼 언제 이사해도 돼?",
+        answered_history(),
+        rewriter=lambda _history, _question: (
+            "임차권등기명령 신청 3일 후 이사해도 되나요?"
+        ),
+    )
+
+    assert result.standalone == "그럼 언제 이사해도 돼?"
+    assert result.used_history is False

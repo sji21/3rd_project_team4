@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+import unicodedata
 from typing import Callable, Mapping, Sequence
 
 from langchain_core.output_parsers import StrOutputParser
@@ -174,6 +176,83 @@ def _clean_rewrite(text: str) -> str:
     return first.strip(" \"'“”")
 
 
+_REWRITE_CRITICAL_TERMS = (
+    "신청",
+    "완료",
+    "종료",
+    "해지",
+    "갱신",
+    "거절",
+    "이사",
+    "전입신고",
+    "전출",
+    "확정일자",
+    "대항력",
+    "우선변제",
+    "최우선변제",
+    "임차권등기",
+    "보증금",
+    "임대인",
+    "임차인",
+    "집주인",
+    "세입자",
+    "경매",
+    "당일",
+    "다음 날",
+    "다음날",
+    "익일",
+)
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_NEGATION_CUES = ("못", "않", "없", "거절")
+
+
+def _rewrite_normalize(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text or "").casefold()
+    return " ".join(normalized.split())
+
+
+def _rewrite_is_safe(
+    original: str,
+    rewritten: str,
+    pairs: Sequence[tuple[str, str]],
+) -> bool:
+    """재작성 과정에서 법률 의미를 바꾸는 새 조건이 생기지 않았는지 확인한다.
+
+    별도 LLM을 추가하지 않고 숫자·핵심 절차/시점 표현·부정 의미만 보수적으로
+    검사한다. 안전성을 확인하지 못하면 원 질문으로 되돌린다.
+    """
+
+    original_n = _rewrite_normalize(original)
+    rewritten_n = _rewrite_normalize(rewritten)
+    context_n = _rewrite_normalize(
+        " ".join([original, *[part for pair in pairs for part in pair]])
+    )
+
+    # 원 질문에 명시된 핵심 행위/권리는 재작성 뒤에도 남아 있어야 한다.
+    for term in _REWRITE_CRITICAL_TERMS:
+        term_n = _rewrite_normalize(term)
+        if term_n in original_n and term_n not in rewritten_n:
+            return False
+
+    # 대화 어디에도 없던 핵심 조건을 재작성기가 새로 만들면 사용하지 않는다.
+    for term in _REWRITE_CRITICAL_TERMS:
+        term_n = _rewrite_normalize(term)
+        if term_n in rewritten_n and term_n not in context_n:
+            return False
+
+    # 금액·기간 같은 숫자를 새로 만들어 내지 않는다.
+    context_numbers = set(_NUMBER_RE.findall(context_n))
+    if not set(_NUMBER_RE.findall(rewritten_n)).issubset(context_numbers):
+        return False
+
+    # 원 질문의 명시적 부정/거절 의미가 긍정문으로 사라지는 것을 막는다.
+    if any(cue in original_n for cue in _NEGATION_CUES):
+        if not any(cue in rewritten_n for cue in _NEGATION_CUES):
+            return False
+
+    return True
+
+
 def resolve_question(
     question: str,
     messages: Sequence[Mapping],
@@ -209,6 +288,13 @@ def resolve_question(
         return ResolvedQuestion(original, original, False)
 
     if not rewritten or len(rewritten) > 500:
+        return ResolvedQuestion(original, original, False)
+
+    rewritten_injection = classify_prompt_injection(_safe_text(rewritten))
+    if rewritten_injection.blocked or rewritten_injection.needs_semantic_review:
+        return ResolvedQuestion(original, original, False)
+
+    if not _rewrite_is_safe(original, rewritten, pairs):
         return ResolvedQuestion(original, original, False)
 
     return ResolvedQuestion(
