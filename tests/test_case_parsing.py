@@ -64,21 +64,45 @@ def test_manual_review_classification_only_promotes_explicit_approval():
     approved = raw_case(**{"사건번호": "2024다승인", "참조조문": "", "판결요지": review_holding})
     rejected = raw_case(**{"사건번호": "2024다제외", "참조조문": "", "판결요지": review_holding})
     pending = raw_case(**{"사건번호": "2024다보류", "참조조문": "", "판결요지": review_holding})
+    approved["case_id"] = "approved-id"
+    rejected["case_id"] = "rejected-id"
+    pending["case_id"] = "pending-id"
 
     records, summary = parse_raw_lines(
         [json.dumps(item, ensure_ascii=False) for item in (approved, rejected, pending)],
         collected_at="2026-08-30T00:00:00Z",
         source_label="fixture.jsonl",
         review_classifications={
-            "2024다승인": ReviewClassification("approved", "주거용 임대차 확인"),
-            "2024다제외": ReviewClassification("rejected", "상가 사건"),
-            "2024다보류": ReviewClassification("pending", "원문 확인 필요"),
+            "approved-id": ReviewClassification("approved", "주거용 임대차 확인"),
+            "rejected-id": ReviewClassification("rejected", "상가 사건"),
+            "pending-id": ReviewClassification("pending", "원문 확인 필요"),
         },
     )
 
     assert [record.case_number for record in records] == ["2024다승인"]
     assert any("수동 검토 제외" in reason for reason in summary.excluded)
     assert any("원문 확인 필요" in reason for reason in summary.needs_review)
+
+
+def test_manual_review_uses_case_id_when_case_numbers_are_duplicated():
+    holding = "임대차보증금 반환에 관한 충분히 긴 판결요지이나 적용 법령은 명확하지 않습니다."
+    approved = raw_case(**{"사건번호": "2024다중복", "참조조문": "", "판결요지": holding})
+    pending = raw_case(**{"사건번호": "2024다중복", "참조조문": "", "판결요지": holding, "법원명": "서울고등법원"})
+    approved["case_id"] = "approved-duplicate"
+    pending["case_id"] = "pending-duplicate"
+
+    records, summary = parse_raw_lines(
+        [json.dumps(item, ensure_ascii=False) for item in (approved, pending)],
+        collected_at="2026-08-30T00:00:00Z",
+        source_label="fixture.jsonl",
+        review_classifications={
+            "approved-duplicate": ReviewClassification("approved", "주거용 임대차 확인"),
+            "pending-duplicate": ReviewClassification("pending", "원문 확인 필요"),
+        },
+    )
+
+    assert [record.case_id for record in records] == ["approved-duplicate"]
+    assert any("pending-duplicate" in reason for reason in summary.needs_review)
 
 
 def test_committed_fixture_covers_include_exclude_and_review() -> None:
