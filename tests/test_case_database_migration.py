@@ -85,4 +85,6 @@ def test_migrates_legacy_unique_case_number_constraint(tmp_path: Path) -> None:
         assert connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM case_law_citations").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM chunks WHERE case_id = 'legacy-case'").fetchone()[0] == 1
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list('cases')")}
+        assert {"idx_cases_case_number", "idx_cases_decision_date"}.issubset(indexes)
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []

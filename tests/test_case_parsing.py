@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.ingestion.parse_cases import convert_file, parse_raw_lines
+from src.ingestion.parse_cases import ReviewClassification, convert_file, parse_raw_lines
 
 
 def raw_case(**service_overrides: object) -> dict[str, object]:
@@ -43,6 +43,42 @@ def test_parse_raw_lines_preserves_full_official_text_and_holding():
     assert record.holding.startswith("주택임대차보호법상")
     assert record.summary == record.holding
     assert record.full_text == "공식 판례 전문 본문. 판결요지보다 훨씬 긴 원문을 보존한다."
+
+
+def test_parse_rejects_invalid_calendar_date_but_accepts_leap_day():
+    invalid_month = raw_case(**{"사건번호": "2025다1", "선고일자": "20251340"})
+    invalid_day = raw_case(**{"사건번호": "2025다2", "선고일자": "20250230"})
+    ordinary_day = raw_case(**{"사건번호": "2025다3", "선고일자": "20250228"})
+    leap_day = raw_case(**{"사건번호": "2024다4", "선고일자": "20240229"})
+    for case_id, raw in enumerate((invalid_month, invalid_day, ordinary_day, leap_day), 1):
+        raw["case_id"] = str(case_id)
+
+    records, summary = parse([invalid_month, invalid_day, ordinary_day, leap_day])
+
+    assert [record.case_number for record in records] == ["2024다4", "2025다3"]
+    assert sum("실제 달력 날짜가 아님" in reason for reason in summary.errors) == 2
+
+
+def test_manual_review_classification_only_promotes_explicit_approval():
+    review_holding = "임대차보증금 반환에 관한 충분히 긴 판결요지이나 적용 법령은 명확하지 않습니다."
+    approved = raw_case(**{"사건번호": "2024다승인", "참조조문": "", "판결요지": review_holding})
+    rejected = raw_case(**{"사건번호": "2024다제외", "참조조문": "", "판결요지": review_holding})
+    pending = raw_case(**{"사건번호": "2024다보류", "참조조문": "", "판결요지": review_holding})
+
+    records, summary = parse_raw_lines(
+        [json.dumps(item, ensure_ascii=False) for item in (approved, rejected, pending)],
+        collected_at="2026-08-30T00:00:00Z",
+        source_label="fixture.jsonl",
+        review_classifications={
+            "2024다승인": ReviewClassification("approved", "주거용 임대차 확인"),
+            "2024다제외": ReviewClassification("rejected", "상가 사건"),
+            "2024다보류": ReviewClassification("pending", "원문 확인 필요"),
+        },
+    )
+
+    assert [record.case_number for record in records] == ["2024다승인"]
+    assert any("수동 검토 제외" in reason for reason in summary.excluded)
+    assert any("원문 확인 필요" in reason for reason in summary.needs_review)
 
 
 def test_committed_fixture_covers_include_exclude_and_review() -> None:

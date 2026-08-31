@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Hardened PATCH-022 after review: official full text and holdings are stored separately; API/input errors, exclusions, manual-review records, and case-identity conflicts are reported independently; and failed conversions preserve the existing output. The legacy SQLite case-number constraint is migrated with foreign-key verification, and official API refetch, canonical-ID resolution, and reproducibility evidence are now available. (commit: pending)
+- PATCH-023 hardens the reviewed case-ingestion path: a verified-source JSONL is published only after every API candidate succeeds (otherwise it is preserved and the command exits 1); real calendar dates are validated; legacy SQLite migration recreates both case-number and decision-date indexes; and manual-review CSV approvals alone expand the verified corpus. (local changes; commit pending)
 
 ## 2026-08-28
 
