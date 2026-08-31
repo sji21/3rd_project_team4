@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS law_articles (
 CREATE TABLE IF NOT EXISTS cases (
     case_id TEXT PRIMARY KEY,
     document_id TEXT NOT NULL UNIQUE REFERENCES documents(document_id) ON DELETE RESTRICT,
-    case_number TEXT NOT NULL UNIQUE,
+    case_number TEXT NOT NULL,
     court_name TEXT NOT NULL,
     decision_date TEXT NOT NULL,
     case_type TEXT NOT NULL,
@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS cases (
         CHECK (summary_type IN ('official', 'generated')),
     summary_model TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_cases_case_number ON cases(case_number);
 
 CREATE TABLE IF NOT EXISTS case_law_citations (
     case_id TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
