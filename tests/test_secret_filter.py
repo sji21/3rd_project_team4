@@ -48,6 +48,24 @@ class SecretFilterTests(unittest.TestCase):
             f"password: {REDACTION}",
         )
 
+    def test_redacts_double_quoted_password_assignment(self):
+        result = redact_secrets('PASSWORD="hunter22"')
+
+        self.assertEqual(
+            result.text,
+            f'PASSWORD="{REDACTION}"',
+        )
+        self.assertTrue(result.contains_secret)
+
+    def test_redacts_single_quoted_api_key_assignment(self):
+        result = redact_secrets("API_KEY='abcd1234'")
+
+        self.assertEqual(
+            result.text,
+            f"API_KEY='{REDACTION}'",
+        )
+        self.assertTrue(result.contains_secret)
+
     def test_redacts_bearer_token_but_keeps_header(self):
         result = redact_secrets(
             "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"

@@ -99,17 +99,17 @@ _EXFILTRATION_PATTERNS = (
     re.compile(
         r"(?:시스템|개발자|developer|system|숨겨진|내부|비공개)"
         r".{0,15}?"
-        r"(?:프롬프트|메시지|지시|규칙|정책)"
+        r"(?:프롬프트|메시지|지시|지침|규칙|정책)"
         r".{0,20}?"
-        r"(?:보여|출력|공개|알려|복사|노출)",
+        r"(?:보여|출력|공개|알려|복사|노출|적어|써|말해|붙여)",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:보여|출력|공개|알려|복사|노출)"
+        r"(?:보여|출력|공개|알려|복사|노출|적어|써|말해|붙여)"
         r".{0,20}?"
         r"(?:시스템|개발자|developer|system|숨겨진|내부|비공개)"
         r".{0,15}?"
-        r"(?:프롬프트|메시지|지시|규칙|정책)",
+        r"(?:프롬프트|메시지|지시|지침|규칙|정책)",
         re.IGNORECASE,
     ),
     re.compile(
@@ -170,6 +170,34 @@ _AMBIGUOUS_CUES = (
     "override",
 )
 
+# 명백한 탈취 문구까지는 아니어도 보호된 내부 지시를 언급하는 입력은 일반 법률
+# 질문과 다르다. 이런 경우만 semantic judge에 보내 새 표현의 우회를 보완한다.
+# 단일 "규칙" 같은 흔한 단어만으로는 발동하지 않도록 두 범주의 동시 존재를 본다.
+_PROTECTED_CONTEXT_CUES = (
+    "시스템",
+    "개발자",
+    "숨겨진",
+    "내부",
+    "비공개",
+    "system",
+    "developer",
+    "hidden",
+    "internal",
+)
+
+_INSTRUCTION_OBJECT_CUES = (
+    "프롬프트",
+    "메시지",
+    "지시",
+    "지침",
+    "규칙",
+    "정책",
+    "prompt",
+    "message",
+    "instruction",
+    "policy",
+)
+
 
 def build_prompt_injection_judge_prompt(text: str) -> str:
     """LLM 인젝션 분류기에 넘길 사용자 메시지를 만든다."""
@@ -190,6 +218,14 @@ def _matches_any(text: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
 def _contains_ambiguous_cue(text: str) -> bool:
     normalized = _normalize(text)
     return any(_normalize(cue) in normalized for cue in _AMBIGUOUS_CUES)
+
+
+def _mentions_protected_instructions(text: str) -> bool:
+    normalized = _normalize(text)
+    return (
+        any(_normalize(cue) in normalized for cue in _PROTECTED_CONTEXT_CUES)
+        and any(_normalize(cue) in normalized for cue in _INSTRUCTION_OBJECT_CUES)
+    )
 
 
 def classify_prompt_injection(
@@ -224,7 +260,10 @@ def classify_prompt_injection(
             source="deterministic",
         )
 
-    needs_review = _contains_ambiguous_cue(text)
+    needs_review = (
+        _contains_ambiguous_cue(text)
+        or _mentions_protected_instructions(text)
+    )
 
     if semantic_judge is None:
         return PromptInjectionDecision(

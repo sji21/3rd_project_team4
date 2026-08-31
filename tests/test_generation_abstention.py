@@ -24,6 +24,18 @@ class AbstentionTests(unittest.TestCase):
         self.assertTrue(decision.out_of_scope)
         self.assertEqual(decision.reason, "market_price_lookup")
 
+    def test_refuses_jeonse_price_lookup(self):
+        decision = classify_scope("이 아파트 전세가 얼마인가요?")
+
+        self.assertTrue(decision.out_of_scope)
+        self.assertEqual(decision.reason, "market_price_lookup")
+
+    def test_allows_deposit_return_timing_after_jeonse_ends(self):
+        decision = classify_scope("전세가 끝난 후 보증금은 얼마 만에 돌려받나요?")
+
+        self.assertFalse(decision.out_of_scope)
+        self.assertEqual(decision.reason, "in_scope")
+
     def test_allows_informational_risk_question(self):
         self.assertFalse(
             is_out_of_scope("전세계약 전에 어떤 위험 요소를 확인해야 하나요?")

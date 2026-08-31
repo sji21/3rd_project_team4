@@ -126,7 +126,8 @@ _MARKET_TERMS = (
     "시세",
     "실거래가",
     "매매가",
-    "전세가",
+    "전세가격",
+    "전세 가격",
     "시장가격",
     "시장 가격",
 )
@@ -178,6 +179,22 @@ _IN_SCOPE_CUES = (
 _SPACE_RE = re.compile(r"\s+")
 _NON_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
 
+# "전세가"는 가격 명사(전세가가 얼마예요?)이기도 하고 "전세가 끝난 뒤"의
+# '전세+주격 조사 가'이기도 하다. 단순 부분문자열로 보면 보증금 반환 질문까지
+# 시세 조회로 오탐하므로, 가격 조회 표현과 가까이 붙어 있을 때만 가격 명사로 본다.
+_JEONSE_PRICE_PATTERNS = (
+    re.compile(
+        r"전세가(?:격)?\s*(?:가|는|를|도)?\s*"
+        r"(?:얼마|조회|찾아|알려|어때|어떻게)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:현재|요즘|지금)\s+[^\n.!?]{0,20}?전세가(?:격)?"
+        r"(?:\s*(?:가|는|를|도))?(?:\s|$|[?!.])",
+        re.IGNORECASE,
+    ),
+)
+
 
 def build_scope_judge_prompt(question: str) -> str:
     """LLM 범위 분류기에 넘길 사용자 메시지를 만든다."""
@@ -220,10 +237,14 @@ def _is_direct_contract_verdict(question: str) -> bool:
 
 
 def _is_market_price_lookup(question: str) -> bool:
-    return (
+    if (
         _contains_any(question, _MARKET_TERMS)
         and _contains_any(question, _MARKET_LOOKUP_CUES)
-    )
+    ):
+        return True
+
+    normalized = _normalize(question)
+    return any(pattern.search(normalized) is not None for pattern in _JEONSE_PRICE_PATTERNS)
 
 
 def _looks_clearly_in_scope(question: str) -> bool:
