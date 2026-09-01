@@ -1,5 +1,6 @@
 langchain
 langgraph
+langsmith
 langchain-openai>=1.6,<2
 langchain-chroma
 langchain-core
