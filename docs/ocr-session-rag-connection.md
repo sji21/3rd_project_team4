@@ -89,11 +89,11 @@ Retriever로만 다룬다.
 ### 세션의 의미
 
 - 같은 Streamlit 브라우저 세션에서만 OCR 청크를 유지한다.
-- 새 문서를 올리면 이전 문서 청크를 교체한다.
-- “문서 삭제” 버튼을 누르면 즉시 세션 청크와 분석 결과를 비운다.
+- 채팅 입력창에서 새 문서를 첨부하면 이전 문서를 교체하지 않고 세션 문서 컬렉션에 추가한다.
+- 현재 UI에는 개별·전체 문서 삭제 버튼을 두지 않는다. 문서 컬렉션은 세션 종료·새로고침으로 함께 사라진다.
 - 세션 종료·새로고침·앱 재시작 뒤에는 다시 사용할 수 없다.
-- 서버 메모리 정리 시점은 Streamlit 실행 환경에 따라 달라질 수 있으므로, 명시적
-  삭제 버튼과 원문 비로그 정책을 함께 둔다.
+- 서버 메모리 정리 시점은 Streamlit 실행 환경에 따라 달라질 수 있으므로 원문 비로그
+  정책을 함께 둔다.
 
 ## 4. 저장소별 역할과 변경 사항
 
@@ -101,7 +101,7 @@ Retriever로만 다룬다.
 | --- | --- | --- | --- |
 | `knowledge.sqlite3` | 공식 법령·판례·안내의 관계형 원천 | 그대로 공식 자료만 보관 | 변경하지 않음 |
 | `knowledge_chunks` Chroma | 공식 청크의 영구 벡터 검색 | 그대로 공식 자료만 검색 | 변경하지 않음 |
-| `st.session_state` | OCR 분석 결과 화면 표시 | OCR 페이지 청크·세션 Retriever도 보관 | 추가 |
+| `st.session_state` | OCR 분석 결과 화면 표시 | 여러 문서의 OCR 페이지 청크·분석 결과를 문서 ID별로 보관 | 추가 |
 | SessionDocumentRetriever | 없음 | 업로드 문서의 페이지별 사실 검색 | 신규 |
 | `RetrievalService` | 법령·판례·안내 검색 | 공식 근거 검색 전용으로 유지 | 변경하지 않음 |
 | 생성 진입점 | 공식 근거만 LLM에 전달 | 문서 근거와 공식 근거를 분리해 전달 | 신규 진입점 또는 확장 |
@@ -133,7 +133,9 @@ ExtractionResult.pages
 
 권장 메타데이터:
 
-- `chunk_id`: `session:{session_id}:page:{page_number}:{chunk_index}`
+- `chunk_id`: `session:{session_id}:document:{document_id}:page:{page_number}:{chunk_index}`
+- `document_id`: 세션 안에서 같은 페이지 번호를 가진 다른 문서와 충돌하지 않는 식별자
+- `document_kind`: `등기부등본` 또는 `임대차계약서`
 - `filename`
 - `page_number`
 - `extraction_method`: `embedded_text` 또는 `tesseract`
@@ -161,7 +163,8 @@ OCR 문서를 `guide`·`case`로 위장하거나 공용 `knowledge_chunks`에 �
 
 ### 5.3 LLM 생성 경계
 
-기존 `answer_question()`은 공식 근거만 다룬다. 문서 질문은 별도 진입점을 둔다.
+기존 `answer_question()`은 공식 근거만 다루는 호출과 호환을 유지한다. 문서 질문은
+`answer_document_question()`으로 같은 생성·안전성 경계를 거친다.
 
 ```python
 answer_document_question(
@@ -199,22 +202,23 @@ LLM 답변 규칙:
 ```text
 analyze_registry_pdf() 또는 analyze_contract_document()
   → result.extraction
-  → build_session_document_context(result.extraction)
-  → st.session_state["document_context"]
+  → build_session_document_context(..., document_id=...)
+  → st.session_state["session_documents"][document_id]
 ```
 
 채팅 입력에서는 문서 질문과 일반 질문을 구분한다.
 
 - 문서 관련성이 있으면 문서 Retriever와 공식 Retriever를 함께 호출한다.
 - 문서와 무관하면 OCR 청크를 LLM에 보내지 않고 기존 공식 RAG만 사용한다.
-- OCR 결과가 비었거나 모든 페이지가 판독 불가이면 LLM을 호출하지 않고 `abstain`한다.
+- OCR 결과가 비었거나 모든 페이지가 판독 불가이면 해당 문서를 검색 대상에 넣지 않는다.
+- 문서와 공식 근거를 모두 찾지 못하면 근거 부족 이유를 밝히고 `abstain`한다.
 
 ## 6. 보안·개인정보·안전 규칙
 
 - 업로드 원문·OCR 청크를 로그에 남기지 않는다.
 - 업로드 원문·OCR 청크를 `knowledge.sqlite3` 또는 공용 Chroma에 저장하지 않는다.
 - 외부 LLM을 쓸 경우 명시적 동의, 전송 범위 고지, 개인정보 마스킹 정책을 추가한다.
-- 로컬 LLM이어도 화면 미리보기·오류 로그에는 `mask_sensitive_text()`를 적용한다.
+- 검증 실패 로그에는 OCR 원문·모델 원문·사용자 질문을 남기지 않고 오류 종류와 근거 개수만 남긴다.
 - OCR 텍스트 안의 “이전 지시를 무시하라” 같은 문구는 명령이 아니라 문서 내용으로
   취급한다.
 - 답변은 기존 범위·프롬프트 인젝션·인용 검증·개별 계약 안전성 판정 거부 정책을
@@ -224,11 +228,11 @@ analyze_registry_pdf() 또는 analyze_contract_document()
 
 1. `SessionDocumentChunk`, `SessionDocumentContext`,
    `SessionDocumentRetriever`를 구현한다.
-2. OCR 분석 성공 시 세션 컨텍스트를 만들고, 새 업로드·삭제 시 비우도록 연결한다.
-3. 문서 Retriever 결과와 `RetrievalService` 결과를 조합하는
-   `answer_document_question()`을 구현한다.
+2. OCR 분석 성공 시 문서 ID별 세션 컨텍스트를 만들고, 채팅 첨부로 새 문서를 추가하도록 연결한다.
+3. 문서 Retriever 결과와 `RetrievalService` 결과를 같은 Graph의
+   `answer_document_question()` 경계에 전달한다.
 4. 프롬프트·`Answer`·화면 출력을 문서 근거와 공식 근거가 구분되도록 확장한다.
-5. Streamlit에 문서 관련 질문 입력과 “문서 삭제” UI를 추가한다.
+5. Streamlit 채팅 입력창에서 PDF·JPG·PNG 여러 개를 첨부하고 질문하도록 연결한다.
 6. 아래 테스트를 추가하고 통과시킨다.
 
 ## 8. 완료 조건·테스트
@@ -236,7 +240,7 @@ analyze_registry_pdf() 또는 analyze_contract_document()
 - OCR 페이지가 세션 청크로 변환되고 질문에 맞는 페이지가 검색된다.
 - 같은 세션의 다른 주제 대화 뒤 문서 질문에도 해당 페이지 근거가 반환된다.
 - 문서와 무관한 질문에는 OCR 청크가 LLM 컨텍스트에 들어가지 않는다.
-- 새 파일 업로드·문서 삭제·세션 초기화에서 이전 OCR 청크가 사라진다.
+- 새 파일을 추가한 뒤에도 기존 OCR 청크가 유지되고, 세션 종료·새로고침 뒤에는 다시 사용되지 않는다.
 - OCR 판독 불가 문서는 추측 없이 `abstain`한다.
 - OCR 본문의 프롬프트 인젝션 문구가 시스템 지시로 실행되지 않는다.
 - 공식 법령·판례·기관 안내 인용 규칙과 개별 계약 안전성 판정 거부 정책이 유지된다.

@@ -37,19 +37,9 @@ def test_registry_pdf_end_to_end() -> None:
     assert "masked_text_preview" not in result.to_public_dict()
 
 
-@pytest.mark.integration
-def test_registry_pdf_upload_in_streamlit() -> None:
-    path = sample_path()
-    if not path.is_file():
-        pytest.skip("REGISTRY_SAMPLE_PDF를 지정하면 Streamlit PDF 통합 테스트를 실행합니다.")
-
+def test_streamlit_uses_chat_attachment_for_registry_documents() -> None:
     app = AppTest.from_file(APP_PATH).run(timeout=20)
-    app.get("file_uploader")[0].upload(path.name, path.read_bytes(), "application/pdf")
-    app.checkbox[0].check()
-    app.button[0].click()
-    app.run(timeout=60)
 
     assert not app.exception
-    signal_count = len(app.session_state.registry_analysis.signals)
-    assert [metric.value for metric in app.metric][:2] == ["6쪽", f"{signal_count}개"]
-    assert app.get("download_button")
+    assert len(app.chat_input) == 1
+    assert not app.get("file_uploader")

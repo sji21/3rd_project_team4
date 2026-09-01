@@ -32,6 +32,8 @@ class SessionDocumentChunk:
     session_id: str
     checksum: str
     text: str = field(repr=False)
+    document_id: str = ""
+    document_kind: str = ""
 
     def as_retriever_chunk(self) -> dict:
         """기존 BM25Retriever가 읽는 최소 청크 규격으로 변환한다."""
@@ -44,6 +46,8 @@ class SessionDocumentChunk:
                 "page_number": self.page_number,
                 "extraction_method": self.extraction_method,
                 "session_id": self.session_id,
+                "document_id": self.document_id,
+                "document_kind": self.document_kind,
                 "checksum": self.checksum,
             },
         }
@@ -56,6 +60,8 @@ class SessionDocumentContext:
     session_id: str
     filename: str
     chunks: tuple[SessionDocumentChunk, ...]
+    document_id: str = ""
+    document_kind: str = ""
 
     @property
     def is_empty(self) -> bool:
@@ -76,6 +82,8 @@ class SessionDocumentEvidence:
     extraction_method: str
     checksum: str
     text: str = field(repr=False)
+    document_id: str = ""
+    document_kind: str = ""
     score: float = 0.0
 
 
@@ -95,18 +103,28 @@ def _chunk_from_page(
     filename: str,
     session_id: str,
     chunk_index: int,
+    document_id: str = "",
+    document_kind: str = "",
 ) -> SessionDocumentChunk | None:
     text = (page.text or "").strip()
     if page.method == "unreadable" or not text:
         return None
 
     checksum = sha256(text.encode("utf-8")).hexdigest()
+    chunk_id = f"session:{session_id}:page:{page.page_number}:{chunk_index}"
+    if document_id:
+        chunk_id = (
+            f"session:{session_id}:document:{document_id}:"
+            f"page:{page.page_number}:{chunk_index}"
+        )
     return SessionDocumentChunk(
-        chunk_id=f"session:{session_id}:page:{page.page_number}:{chunk_index}",
+        chunk_id=chunk_id,
         filename=filename,
         page_number=page.page_number,
         extraction_method=page.method,
         session_id=session_id,
+        document_id=document_id,
+        document_kind=document_kind,
         checksum=checksum,
         text=text,
     )
@@ -116,6 +134,9 @@ def build_session_document_context(
     filename: str,
     extraction: ExtractionResult,
     session_id: str,
+    *,
+    document_id: str = "",
+    document_kind: str = "",
 ) -> SessionDocumentContext:
     """OCR 추출 결과를 영속화하지 않고 페이지별 세션 청크로 만든다.
 
@@ -133,6 +154,8 @@ def build_session_document_context(
                 filename=filename,
                 session_id=session_id,
                 chunk_index=0,
+                document_id=document_id,
+                document_kind=document_kind,
             )
         )
         is not None
@@ -141,6 +164,8 @@ def build_session_document_context(
         session_id=session_id,
         filename=filename,
         chunks=chunks,
+        document_id=document_id,
+        document_kind=document_kind,
     )
 
 
@@ -172,6 +197,8 @@ class SessionDocumentRetriever:
                 page_number=chunk.page_number,
                 extraction_method=chunk.extraction_method,
                 checksum=chunk.checksum,
+                document_id=chunk.document_id,
+                document_kind=chunk.document_kind,
                 text=chunk.text,
                 score=round(score, 4),
             )

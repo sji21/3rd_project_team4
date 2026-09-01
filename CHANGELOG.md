@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-01
+
+### Added
+
+- PATCH-036 adds multi-file PDF/JPG/PNG chat attachments with session-only OCR page retrieval. Document and official evidence now pass through the same LangGraph generation and validation policy, remain separate in the answer sources, and document queries disable LangSmith tracing. (commit: pending)
+
 ## 2026-08-31
 
 ### Changed

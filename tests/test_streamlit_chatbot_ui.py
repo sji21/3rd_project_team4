@@ -16,9 +16,13 @@ def test_streamlit_uses_generation_entrypoint_without_preloading_retrieval():
     assert "load_retrieval_service" not in TEXT
 
 
-def test_ocr_is_not_wired_yet():
-    assert "analyze_registry_pdf" not in TEXT
-    assert "analyze_contract_document" not in TEXT
+def test_ocr_documents_are_attached_through_the_chat_input():
+    assert "analyze_registry_pdf" in TEXT
+    assert "analyze_contract_document" in TEXT
+    assert 'accept_file="multiple"' in TEXT
+    assert 'file_type=("pdf", "jpg", "jpeg", "png")' in TEXT
+    assert "def _store_uploaded_documents" in TEXT
+    assert "def render_document_manager" in TEXT
 
 
 def test_user_facing_status_messages_are_descriptive():
@@ -27,12 +31,10 @@ def test_user_facing_status_messages_are_descriptive():
     assert '"refused": ("이 질문은 전세ON의 답변 범위에 포함되지 않습니다.", "🚫")' in TEXT
 
 
-def test_sidebar_is_compact_and_has_visible_clear_button():
-    assert "답변에 사용하는 근거" in TEXT
-    assert "이용 안내" in TEXT
-    assert "🗑️ 대화 내용 지우기" in TEXT
-    assert "[data-testid=\"stSidebar\"] .stButton > button" in TEXT
-    assert "color: #17365D !important" in TEXT
+def test_main_does_not_render_a_sidebar():
+    main_body = TEXT.split("def main() -> None:", 1)[1]
+    assert "render_sidebar()" not in main_body
+    assert "render_document_manager()" in main_body
 
 
 def test_header_uses_project_title_and_quick_questions_are_removed():
@@ -76,6 +78,7 @@ def test_streamlit_wires_multiturn_before_existing_answer_chain():
     assert 'previous_messages = list(st.session_state["chat_messages"])' in TEXT
     assert "resolve_question(question, previous_messages)" in TEXT
     assert "answer_question(resolved.standalone)" in TEXT
+    assert "answer_document_question(" in TEXT
 
 
 def test_answer_raw_text_is_kept_for_followup_context():
@@ -84,6 +87,7 @@ def test_answer_raw_text_is_kept_for_followup_context():
 
 
 def test_sources_are_grouped_by_user_facing_categories():
+    assert 'render_source_group("업로드 문서 근거", document_sources)' in TEXT
     assert 'render_source_group("관련 법령", law_sources)' in TEXT
     assert 'render_source_group("관련 판례", case_sources)' in TEXT
     assert 'render_source_group("관련 기관 안내", guide_sources)' in TEXT

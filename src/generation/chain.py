@@ -39,6 +39,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
 
 from src.document_check.privacy import mask_sensitive_text
+from src.document_check.session_retrieval import SessionDocumentEvidence
 from src.generation import llm as llm_module
 from src.generation import prompt as prompt_module
 from src.generation.abstention import (
@@ -205,6 +206,11 @@ _VALIDATION_FAILED_TEXT = (
     "질문을 조금 더 구체적으로 바꿔 다시 물어봐 주세요."
 )
 
+_NO_DOCUMENT_AND_OFFICIAL_EVIDENCE_TEXT = (
+    "업로드 문서에서 질문과 관련된 내용을 찾지 못했고, 공식 자료에서도 답변 근거를 찾지 못했습니다. "
+    "문서명·항목명·쪽수를 포함해 다시 질문해 주세요."
+)
+
 
 def _safe_question(question: str) -> str:
     """LLM·검색·로그에 넘기기 전에 비밀정보와 개인정보를 가린다."""
@@ -273,15 +279,18 @@ def _semantic_judge(llm):
         question: str,
         answer_text: str,
         evidences: tuple[Evidence, ...],
+        document_evidences: tuple[SessionDocumentEvidence, ...] = (),
     ) -> SemanticJudgement:
-        # build_semantic_judge_prompt()는 Answer.evidences만 읽으므로, 검증 prompt
-        # 조립용 임시 Answer에서는 evidences를 laws 슬롯에 모아도 의미가 바뀌지 않는다.
+        # 공식 근거는 laws 슬롯에만 넣고 OCR 근거는 별도 필드로 둔다. 두 출처를
+        # 검증 프롬프트에서도 섞지 않아야 법적 근거로 오인하지 않는다.
         probe = Answer(
             question=question,
             status="answered",
             text=answer_text,
             raw_text=answer_text,
             laws=tuple(evidences),
+            document_evidences=document_evidences,
+            requires_official_citation=bool(evidences),
         )
         output = _invoke_auxiliary_llm(
             llm,
@@ -323,22 +332,18 @@ def _abstained_after_validation(
     question: str,
     result: RetrievalResult,
     report,
+    document_evidences: tuple[SessionDocumentEvidence, ...] = (),
 ) -> Answer:
-    # 실패한 생성 원문 전체는 사용자-facing Answer나 로그에 넣지 않는다.
-    # 원인 확인에 필요한 검증 대상 조각(issue.text)만 secret redaction 후 남긴다.
+    # OCR 문구와 생성 원문은 로그에 남기지 않는다. 운영 진단에는 오류 분류와
+    # 공식 청크 식별자만 남긴다.
     issue_summary = [
-        {
-            "kind": issue.kind,
-            "text": redact_secrets(issue.text),
-            "detail": issue.detail,
-            "evidence_chunk_ids": issue.evidence_chunk_ids,
-        }
+        {"kind": issue.kind, "evidence_chunk_ids": issue.evidence_chunk_ids}
         for issue in report.issues
     ]
     logger.warning(
-        "생성 답변 검증 실패: question=%r issues=%s",
-        question,
+        "생성 답변 검증 실패: issues=%s document_evidence_count=%d",
         issue_summary,
+        len(document_evidences),
     )
     return Answer(
         question=question,
@@ -347,6 +352,7 @@ def _abstained_after_validation(
         laws=tuple(result.laws),
         cases=tuple(result.cases),
         guides=tuple(result.guides),
+        document_evidences=document_evidences,
     )
 
 
@@ -359,6 +365,8 @@ def answer_question(
     k_guide: int = DEFAULT_K_GUIDE,
     refuse_check: Callable[[str], bool] | None = None,
     auxiliary_llm=None,
+    document_evidences: tuple[SessionDocumentEvidence, ...] = (),
+    document_search_attempted: bool = False,
 ) -> Answer:
     """질문 하나를 사전 검사부터 사후 검증까지 처리한다.
 
@@ -433,11 +441,16 @@ def answer_question(
         safe_question, k_law=k_law, k_case=k_case, k_guide=k_guide
     )
 
-    if result.is_empty():
+    if result.is_empty() and not document_evidences:
+        no_evidence_text = (
+            _NO_DOCUMENT_AND_OFFICIAL_EVIDENCE_TEXT
+            if document_search_attempted
+            else prompt_module.NO_EVIDENCE_TEXT
+        )
         return Answer(
             question=safe_question,
             status="abstained",
-            text=f"{prompt_module.NO_EVIDENCE_TEXT}\n\n{prompt_module.DISCLAIMER}",
+            text=f"{no_evidence_text}\n\n{prompt_module.DISCLAIMER}",
         )
 
     # 4) main Qwen answer.
@@ -448,7 +461,7 @@ def answer_question(
     try:
         raw_text = chain.invoke(
             {
-                "context": prompt_module.format_context(result),
+                "context": prompt_module.format_context(result, document_evidences),
                 "question": safe_question,
             }
         )
@@ -461,6 +474,7 @@ def answer_question(
             laws=tuple(result.laws),
             cases=tuple(result.cases),
             guides=tuple(result.guides),
+            document_evidences=document_evidences,
         )
 
     if not raw_text.strip():
@@ -477,6 +491,7 @@ def answer_question(
             laws=tuple(result.laws),
             cases=tuple(result.cases),
             guides=tuple(result.guides),
+            document_evidences=document_evidences,
         )
 
     evidences = tuple(result.laws + result.cases + result.guides)
@@ -495,13 +510,17 @@ def answer_question(
         laws=tuple(result.laws),
         cases=tuple(result.cases),
         guides=tuple(result.guides),
+        document_evidences=document_evidences,
+        requires_official_citation=not result.is_empty(),
     )
 
     # 6) main Qwen이 만든 최종 본문을 deterministic citation/validation으로
     # 먼저 검사한다. 명확한 오류가 있으면 semantic judge까지 호출하지 않는다.
     report = audit_answer(candidate)
     if not report.is_valid:
-        return _abstained_after_validation(safe_question, result, report)
+        return _abstained_after_validation(
+            safe_question, result, report, document_evidences
+        )
 
     # deterministic 검사는 출처·숫자·직접 인용처럼 형태가 명확한 오류를 잘 잡지만,
     # "그 다음 날부터"를 "당일부터"로 바꾸는 식의 의미 변형은 법령 답변에서도
@@ -509,9 +528,28 @@ def answer_question(
     # 최종 답변을 semantic judge가 한 번 더 확인한다.
     report = audit_answer(
         candidate,
-        semantic_judge=_semantic_judge(get_aux_llm()),
+        semantic_judge=lambda question, text, evidences: _semantic_judge(
+            get_aux_llm()
+        )(question, text, evidences, document_evidences),
     )
     if not report.is_valid:
-        return _abstained_after_validation(safe_question, result, report)
+        return _abstained_after_validation(
+            safe_question, result, report, document_evidences
+        )
 
     return candidate
+
+
+def answer_document_question(
+    question: str,
+    document_evidences: tuple[SessionDocumentEvidence, ...],
+    **kwargs,
+) -> Answer:
+    """세션 OCR 근거와 기존 공식 검색 결과를 함께 생성 경계에 전달한다."""
+
+    return answer_question(
+        question,
+        document_evidences=document_evidences,
+        document_search_attempted=True,
+        **kwargs,
+    )

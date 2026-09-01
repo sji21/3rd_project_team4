@@ -331,7 +331,10 @@ def test_secret_is_masked_before_retrieval_and_graph_trace():
 def test_streamlit_keeps_existing_conversation_then_graph_boundary():
     text = STREAMLIT_APP.read_text(encoding="utf-8")
 
-    assert "from src.generation.graph import answer_question  # noqa: E402" in text
+    assert (
+        "from src.generation.graph import answer_document_question, answer_question"
+        "  # noqa: E402"
+    ) in text
     assert "from src.generation.chain import answer_question  # noqa: E402" not in text
 
     # 멀티턴 해석은 기존 conversation.py가 그대로 담당한다.

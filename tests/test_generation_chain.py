@@ -11,9 +11,14 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from src.document_check.extraction_models import ExtractionResult, PageExtraction
+from src.document_check.session_retrieval import (
+    SessionDocumentRetriever,
+    build_session_document_context,
+)
 from src.generation import chain as chain_module
 from src.generation import prompt as prompt_module
-from src.generation.chain import answer_question, build_qa_chain
+from src.generation.chain import answer_document_question, answer_question, build_qa_chain
 from src.generation.llm import get_llm
 from src.retrieval.service import RetrievalService
 
@@ -105,6 +110,66 @@ class SpyService:
 
 
 class AnswerQuestionTests(unittest.TestCase):
+    @staticmethod
+    def _document_evidence():
+        context = build_session_document_context(
+            "lease-contract.pdf",
+            ExtractionResult(
+                pages=(
+                    PageExtraction(
+                        2,
+                        "전세대출 특약: 임대인의 협조가 필요합니다.",
+                        "embedded_text",
+                        20,
+                    ),
+                ),
+                elapsed_seconds=0.1,
+            ),
+            "browser-a",
+            document_id="contract-a",
+            document_kind="임대차계약서",
+        )
+        return tuple(SessionDocumentRetriever(context).search("전세대출 특약", k=1))
+
+    def test_document_question_keeps_document_and_official_evidence_separate(self) -> None:
+        document_evidences = self._document_evidence()
+
+        answer = answer_document_question(
+            "대항력과 전세대출 특약은 무엇을 확인해야 하나요?",
+            document_evidences,
+            service=build_service(),
+            llm=runtime_llm("주택임대차보호법 제3조를 참고하고, 업로드한 계약서 2쪽의 특약을 원본과 대조하세요."),
+        )
+
+        self.assertEqual("answered", answer.status)
+        self.assertEqual(document_evidences, answer.document_evidences)
+        self.assertTrue(answer.evidences)
+        self.assertEqual("uploaded_document", answer.document_sources()[0]["doc_type"])
+
+    def test_document_only_fact_answer_does_not_require_official_citation(self) -> None:
+        document_evidences = self._document_evidence()
+
+        answer = answer_document_question(
+            "계약서에 전세대출 특약이 있나요?",
+            document_evidences,
+            service=RetrievalService([], dense=None),
+            llm=runtime_llm("업로드한 lease-contract.pdf 2쪽에서 전세대출 특약 문구를 확인했습니다."),
+        )
+
+        self.assertEqual("answered", answer.status)
+        self.assertFalse(answer.requires_official_citation)
+
+    def test_document_question_without_any_evidence_explains_both_gaps(self) -> None:
+        answer = answer_document_question(
+            "계약서에 없는 항목이 있나요?",
+            (),
+            service=RetrievalService([], dense=None),
+            llm=None,
+        )
+
+        self.assertEqual("abstained", answer.status)
+        self.assertIn("업로드 문서", answer.text)
+        self.assertIn("공식 자료", answer.text)
     def test_answerable_question_uses_evidence_and_appends_disclaimer(self) -> None:
         answer = answer_question(
             QUESTION,

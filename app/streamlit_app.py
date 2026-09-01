@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -21,7 +23,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
-from src.generation.graph import answer_question  # noqa: E402
+from src.contract_check.service import analyze_contract_document  # noqa: E402
+from src.document_check.service import analyze_registry_pdf  # noqa: E402
+from src.document_check.session_retrieval import (  # noqa: E402
+    SessionDocumentRetriever,
+    build_session_document_context,
+)
+from src.generation.graph import answer_document_question, answer_question  # noqa: E402
 from src.generation.conversation import resolve_question  # noqa: E402
 from src.generation.models import Answer  # noqa: E402
 
@@ -478,6 +486,11 @@ def init_chat_state() -> None:
             }
         ]
 
+    if "session_document_id" not in st.session_state:
+        st.session_state["session_document_id"] = uuid4().hex
+    if "session_documents" not in st.session_state:
+        st.session_state["session_documents"] = {}
+
 
 def clear_chat() -> None:
     st.session_state["chat_messages"] = [
@@ -491,63 +504,94 @@ def clear_chat() -> None:
     ]
 
 
-def render_sidebar() -> None:
-    with st.sidebar:
-        st.markdown(
-            """
-            <div class="sidebar-brand">
-              <div class="sidebar-logo">ON</div>
-              <div>
-                <div class="sidebar-brand-name">전세ON</div>
-                <div class="sidebar-brand-copy">근거 기반 주택임대차 챗봇</div>
-              </div>
-            </div>
-            <div class="sidebar-status">
-              <span class="sidebar-status-dot"></span>
-              법령·판례·기관 안내 검색 준비됨
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+def _document_id(kind: str, data: bytes) -> str:
+    """같은 파일을 반복 선택해도 중복 적재하지 않을 세션 내 식별자."""
 
-        st.markdown(
-            """
-            <div class="sidebar-section">
-              <div class="sidebar-section-title">답변에 사용하는 근거</div>
-              <div class="sidebar-tags">
-                <span>주택임대차 법령</span>
-                <span>관련 판례</span>
-                <span>공식 기관 안내</span>
-                <span>근거 검증</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    return sha256(f"{kind}:".encode("utf-8") + data).hexdigest()[:20]
 
-        st.markdown(
-            """
-            <div class="sidebar-section">
-              <div class="sidebar-section-title">이용 안내</div>
-              <div class="sidebar-copy">
-                이전 대화의 맥락을 반영해 후속 질문을 이해합니다.
-                근거가 부족하거나 답변 범위를 벗어나면 답변을 보류합니다.
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
-        st.button(
-            "🗑️ 대화 내용 지우기",
-            use_container_width=True,
-            on_click=clear_chat,
-        )
+def _document_label(kind: str) -> str:
+    return "등기부등본" if kind == "registry" else "임대차계약서"
 
-        st.caption(
-            "개별 계약의 안전 여부를 확정하거나 법률 자문을 대신하지 않습니다. "
-            "중요한 결정 전에는 전문가 또는 관계 기관에 다시 확인해 주세요."
-        )
+
+def _infer_document_kind(uploaded_file, question: str) -> str:
+    """별도 선택창 없이 파일명·동반 질문에서 등기부 여부를 판단한다."""
+
+    hint = f"{uploaded_file.name} {question}".replace(" ", "")
+    return "registry" if any(token in hint for token in ("등기부", "등기사항")) else "contract"
+
+
+def _add_uploaded_document(uploaded_file, kind: str) -> str | None:
+    data = uploaded_file.getvalue()
+    document_id = _document_id(kind, data)
+    documents = st.session_state["session_documents"]
+    if document_id in documents:
+        return None
+
+    if kind == "registry":
+        if not uploaded_file.name.lower().endswith(".pdf"):
+            return "등기부등본은 PDF 파일만 추가할 수 있습니다."
+        analysis = analyze_registry_pdf(uploaded_file.name, data)
+    else:
+        analysis = analyze_contract_document(uploaded_file.name, data)
+
+    context = build_session_document_context(
+        uploaded_file.name,
+        analysis.extraction,
+        st.session_state["session_document_id"],
+        document_id=document_id,
+        document_kind=_document_label(kind),
+    )
+    documents[document_id] = {
+        "document_id": document_id,
+        "kind": kind,
+        "label": _document_label(kind),
+        "filename": uploaded_file.name,
+        "page_count": analysis.extraction.page_count,
+        "analysis": analysis,
+        "context": context,
+    }
+    return None
+
+
+def find_document_evidences(question: str):
+    """현재 세션의 문서들에서 양의 BM25 점수를 가진 페이지만 모은다."""
+
+    documents = st.session_state["session_documents"]
+    if not documents:
+        return ()
+
+    normalized = question.replace(" ", "")
+    selected_kind = None
+    if any(token in normalized for token in ("등기부", "등기사항", "등기")):
+        selected_kind = "registry"
+    elif any(token in normalized for token in ("계약서", "임대차계약")):
+        selected_kind = "contract"
+
+    found = []
+    for document in documents.values():
+        if selected_kind and document["kind"] != selected_kind:
+            continue
+        found.extend(SessionDocumentRetriever(document["context"]).search(question, k=2))
+
+    found.sort(key=lambda evidence: (-evidence.score, evidence.chunk_id))
+    return tuple(found[:4])
+
+
+def render_document_manager() -> None:
+    """채팅으로 추가한 문서를 본문에서 확인한다."""
+
+    documents = st.session_state["session_documents"]
+    if not documents:
+        return
+
+    with st.expander(f"첨부 문서 {len(documents)}개", expanded=False):
+        st.caption("첨부 문서는 현재 브라우저 세션에서만 검색에 사용됩니다.")
+        for document in documents.values():
+            st.caption(
+                f"{document['filename']} · {document['label']} · "
+                f"{document['page_count']}쪽"
+            )
 
 
 def render_header() -> None:
@@ -586,15 +630,25 @@ def answer_to_message(
     used_history: bool = False,
     elapsed_seconds: float | None = None,
 ) -> dict:
+    document_sources = (
+        answer.document_sources()
+        if hasattr(answer, "document_sources")
+        else []
+    )
     return {
         "role": "assistant",
         "content": visible_answer_text(answer),
         "status": answer.status,
-        "sources": answer.sources(),
+        "sources": document_sources + answer.sources(),
         # 후속 질문에는 화면용 면책문구가 아니라 실제 생성 본문을 사용한다.
         "context_content": answer.raw_text if answer.status == "answered" else "",
         "used_history": used_history,
         "elapsed_seconds": elapsed_seconds,
+        "document_ids": tuple(
+            source["document_id"]
+            for source in document_sources
+            if source.get("document_id")
+        ),
     }
 
 
@@ -617,6 +671,10 @@ def render_sources(sources: list[dict]) -> None:
     if not sources:
         return
 
+    document_sources = [
+        source for source in sources
+        if source.get("doc_type") == "uploaded_document"
+    ]
     law_sources = [
         source for source in sources
         if source.get("doc_type") in {"law", "decree", "rule"}
@@ -631,10 +689,11 @@ def render_sources(sources: list[dict]) -> None:
     ]
     other_sources = [
         source for source in sources
-        if source not in law_sources + case_sources + guide_sources
+        if source not in document_sources + law_sources + case_sources + guide_sources
     ]
 
     with st.expander(f"답변에 사용한 출처 {len(sources)}건"):
+        render_source_group("업로드 문서 근거", document_sources)
         render_source_group("관련 법령", law_sources)
         render_source_group("관련 판례", case_sources)
         render_source_group("관련 기관 안내", guide_sources)
@@ -721,14 +780,35 @@ def render_live_elapsed_timer() -> None:
     )
 
 
-def process_question(question: str) -> None:
+def _store_uploaded_documents(uploaded_files, question: str) -> tuple[list[str], list[str]]:
+    added_names: list[str] = []
+    errors: list[str] = []
+    for uploaded_file in uploaded_files:
+        try:
+            error = _add_uploaded_document(
+                uploaded_file,
+                _infer_document_kind(uploaded_file, question),
+            )
+        except Exception:
+            logger.exception("채팅 첨부 문서 분석 중 오류가 발생했습니다.")
+            error = "문서를 분석하지 못했습니다. 파일 형식과 OCR 상태를 확인해 주세요."
+        if error:
+            errors.append(f"{uploaded_file.name}: {error}")
+        else:
+            added_names.append(uploaded_file.name)
+    return added_names, errors
+
+
+def process_question(question: str, uploaded_files=()) -> None:
     # 현재 질문을 넣기 전 대화만 후속 질문 해석에 사용한다.
     previous_messages = list(st.session_state["chat_messages"])
+    added_names, upload_errors = _store_uploaded_documents(uploaded_files, question)
+    visible_question = question or "문서를 첨부했습니다."
 
     st.session_state["chat_messages"].append(
         {
             "role": "user",
-            "content": question,
+            "content": visible_question,
             "status": None,
             "sources": [],
             "context_content": question,
@@ -736,7 +816,30 @@ def process_question(question: str) -> None:
     )
 
     with st.chat_message("user", avatar="👤"):
-        st.markdown(question)
+        st.markdown(visible_question)
+        if added_names:
+            st.caption("첨부: " + ", ".join(added_names))
+        for error in upload_errors:
+            st.warning(error)
+
+    if not question:
+        notice = (
+            "문서를 현재 세션에 추가했습니다. 이어서 문서에서 확인할 내용을 질문해 주세요."
+            if added_names
+            else "질문이나 첨부 문서를 함께 보내 주세요."
+        )
+        with st.chat_message("assistant", avatar="🏠"):
+            st.markdown(notice)
+        st.session_state["chat_messages"].append(
+            {
+                "role": "assistant",
+                "content": notice,
+                "status": None,
+                "sources": [],
+                "context_content": "",
+            }
+        )
+        return
 
     with st.chat_message("assistant", avatar="🏠"):
         started_at = time.perf_counter()
@@ -748,7 +851,14 @@ def process_question(question: str) -> None:
             resolved = resolve_question(question, previous_messages)
             # RetrievalService를 여기서 먼저 만들지 않는다. answer_question()이
             # prompt injection/scope를 먼저 검사한 뒤 필요한 질문에만 Retrieval을 연다.
-            answer = answer_question(resolved.standalone)
+            document_evidences = find_document_evidences(resolved.standalone)
+            if document_evidences or st.session_state["session_documents"]:
+                answer = answer_document_question(
+                    resolved.standalone,
+                    document_evidences,
+                )
+            else:
+                answer = answer_question(resolved.standalone)
         except Exception:
             # 사용자 화면에는 내부 예외를 숨기되 서버 터미널에는 traceback을 남긴다.
             logger.exception("Streamlit 질문 처리 중 예외가 발생했습니다.")
@@ -776,19 +886,25 @@ def process_question(question: str) -> None:
 def main() -> None:
     configure_page()
     init_chat_state()
-    render_sidebar()
     render_header()
+    render_document_manager()
 
     chat_area = st.container(key="chat_area")
     with chat_area:
         render_history()
 
-    question = st.chat_input(
-        "예: 전입신고와 확정일자를 받으면 어떤 효력이 있나요?"
+    submission = st.chat_input(
+        "예: 전입신고 효력은? · 파일을 함께 첨부해 문서 내용을 질문할 수 있어요.",
+        accept_file="multiple",
+        file_type=("pdf", "jpg", "jpeg", "png"),
     )
-    if question and question.strip():
+    if submission:
+        question = (getattr(submission, "text", submission) or "").strip()
+        uploaded_files = tuple(getattr(submission, "files", ()) or ())
+        if not question and not uploaded_files:
+            return
         with chat_area:
-            process_question(question.strip())
+            process_question(question, uploaded_files)
 
 
 if __name__ == "__main__":

@@ -75,6 +75,21 @@ def test_session_ids_keep_document_chunk_ids_isolated():
     assert first.chunks[0].checksum == second.chunks[0].checksum
 
 
+def test_document_ids_keep_same_session_page_ids_isolated():
+    result = extraction(PageExtraction(1, "근저당권 설정", "embedded_text", 8))
+
+    registry = build_session_document_context(
+        "registry.pdf", result, "browser-a", document_id="registry-1"
+    )
+    contract = build_session_document_context(
+        "contract.pdf", result, "browser-a", document_id="contract-1"
+    )
+
+    assert registry.chunks[0].chunk_id != contract.chunks[0].chunk_id
+    assert registry.chunks[0].document_id == "registry-1"
+    assert contract.chunks[0].document_id == "contract-1"
+
+
 def test_empty_context_and_blank_question_return_no_document_evidence():
     context = build_session_document_context(
         "registry.pdf",

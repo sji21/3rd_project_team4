@@ -95,6 +95,11 @@ def build_semantic_judge_prompt(answer: Answer) -> str:
         evidence_blocks.append(
             f"[{evidence.doc_type}] {evidence.citation}\n{evidence.text}"
         )
+    for evidence in answer.document_evidences:
+        evidence_blocks.append(
+            "[업로드 문서] "
+            f"{evidence.filename} {evidence.page_number}쪽\n{evidence.text}"
+        )
     context = "\n\n".join(evidence_blocks) or "검색 근거 없음"
     return (
         f"[질문]\n{answer.question}\n\n"
@@ -376,7 +381,10 @@ def _looks_like_source_quote(text: str, start: int, end: int) -> bool:
 
 
 def _quote_issues(answer: Answer) -> list[ValidationIssue]:
-    evidence_texts = tuple(_compact(evidence.text) for evidence in answer.evidences)
+    evidence_texts = tuple(
+        _compact(evidence.text)
+        for evidence in answer.evidences + answer.document_evidences
+    )
     issues = []
 
     for match in _QUOTE_RE.finditer(answer.raw_text):
@@ -401,6 +409,11 @@ def _quote_issues(answer: Answer) -> list[ValidationIssue]:
 
 def _value_issues(answer: Answer) -> list[ValidationIssue]:
     supported = _evidence_values(answer.evidences)
+    supported.update(
+        (value.kind, value.canonical)
+        for evidence in answer.document_evidences
+        for value in _extract_values(evidence.text)
+    )
     issues = []
 
     for value in _extract_values(answer.raw_text):
