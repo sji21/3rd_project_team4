@@ -5,6 +5,7 @@
 ### Changed
 
 - PATCH-035 prefers the configured RunPod Ollama endpoint and automatically falls back to a compatible local Ollama instance when the remote endpoint is unavailable, lacks the configured model, or fails during generation. It also documents endpoint configuration and reports the active endpoint in diagnostics. (commit: `8debb71`)
+- PATCH-034 classifies questions as statute, official-guide, or case-law requests and searches statutes and official guides first. It skips case retrieval when type-matched primary evidence is available, adds cases only for explicit case requests or insufficient primary evidence, and passes only the selected evidence into generation and validation. Streamlit preloads and caches KURE-v1 once during app initialization. Qwen semantic validation now runs conditionally for cases, guides, multiple sources, values, conditions, and legal-action or legal-effect questions. The final 27-question Dev measurement reached 88.9% status accuracy and 19.3 seconds mean latency on answerable questions; the limited speed benefit and three failure causes are documented. (commit: `e2e84df`)
 
 ### Fixed (Bug Fixes)
 

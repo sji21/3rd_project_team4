@@ -30,6 +30,7 @@ def install_ui_test_stubs(monkeypatch) -> None:
 
     chain_module = ModuleType("src.generation.chain")
     chain_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
+    chain_module.get_default_service = lambda: object()
 
     # Streamlit의 Generation 진입점이 LangGraph로 바뀌었으므로
     # UI 테스트에서도 해당 import 경계만 같은 FakeAnswer로 대체한다.

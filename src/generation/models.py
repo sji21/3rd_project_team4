@@ -19,6 +19,7 @@ from src.retrieval.service import Evidence
 # abstained : 근거가 부족해 답을 만들지 않은 경우 (검색은 했다)
 # refused   : 서비스 범위 밖이라 검색 전에 돌려보낸 경우
 AnswerStatus = Literal["answered", "abstained", "refused"]
+ValidationMode = Literal["not_applicable", "deterministic", "semantic"]
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,8 @@ class Answer:
     # 공식 안내(HUG·국세청 등). 법적 근거가 아니라 실무 절차 자료이고,
     # 검색이 질문 주제일 때만 0~2건 준다.
     guides: tuple[Evidence, ...] = ()
+    # 최종 답변이 어디까지 검증됐는지 평가·운영 로그에서 확인하기 위한 값.
+    validation_mode: ValidationMode = "not_applicable"
 
     @property
     def evidences(self) -> tuple[Evidence, ...]:

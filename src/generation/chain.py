@@ -16,7 +16,9 @@
     secret/PII masking
       → prompt-injection hard guard (+ 애매한 경우 Qwen judge)
       → scope hard guard (+ 애매하거나 다른 도메인일 때만 Qwen judge)
-      → Retrieval
+      → 질문 유형 판별
+      → 법령·기관 안내 1차 Retrieval
+      → 1차 근거가 부족하거나 판례 요청일 때만 판례 Retrieval
       → main Qwen answer (정확성 우선 + 쉬운 표현까지 한 번에 생성)
       → citation/deterministic validation
       → Qwen semantic judge
@@ -28,6 +30,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 
 from pathlib import Path
@@ -48,12 +51,14 @@ from src.generation.abstention import (
 )
 from src.generation.llm import clean_output, get_llm
 from src.generation.models import Answer
+from src.generation.evidence_routing import retrieve_staged
 from src.generation.validation import (
     SEMANTIC_JUDGE_SYSTEM,
     SemanticJudgement,
     audit_answer,
     build_semantic_judge_prompt,
     ground_answer_conditions,
+    requires_semantic_validation,
 )
 from src.retrieval.service import Evidence, RetrievalResult, RetrievalService
 from src.security.prompt_injection import (
@@ -323,6 +328,8 @@ def _abstained_after_validation(
     question: str,
     result: RetrievalResult,
     report,
+    *,
+    validation_mode: str = "deterministic",
 ) -> Answer:
     # 실패한 생성 원문 전체는 사용자-facing Answer나 로그에 넣지 않는다.
     # 원인 확인에 필요한 검증 대상 조각(issue.text)만 secret redaction 후 남긴다.
@@ -347,6 +354,7 @@ def _abstained_after_validation(
         laws=tuple(result.laws),
         cases=tuple(result.cases),
         guides=tuple(result.guides),
+        validation_mode=validation_mode,
     )
 
 
@@ -427,10 +435,22 @@ def answer_question(
         if scope.out_of_scope:
             return _refused_answer(safe_question, scope.reason)
 
-    # 3) Retrieval. 검색 구현/상한은 retrieval 경계를 그대로 사용한다.
+    # 3) 단계형 Retrieval. 법령·기관 안내를 먼저 찾고, 판례를 직접 요청했거나
+    # 질문 유형에 맞는 1차 근거가 없을 때만 판례를 추가한다.
     service = service if service is not None else get_default_service()
-    result: RetrievalResult = service.search(
-        safe_question, k_law=k_law, k_case=k_case, k_guide=k_guide
+    routed = retrieve_staged(
+        service,
+        safe_question,
+        k_law=k_law,
+        k_case=k_case,
+        k_guide=k_guide,
+    )
+    result: RetrievalResult = routed.result
+    logger.info(
+        "근거 라우팅: question_type=%s primary_sufficient=%s cases_added=%s",
+        routed.route.question_type,
+        routed.route.primary_sufficient,
+        routed.route.cases_added,
     )
 
     if result.is_empty():
@@ -503,15 +523,22 @@ def answer_question(
     if not report.is_valid:
         return _abstained_after_validation(safe_question, result, report)
 
-    # deterministic 검사는 출처·숫자·직접 인용처럼 형태가 명확한 오류를 잘 잡지만,
-    # "그 다음 날부터"를 "당일부터"로 바꾸는 식의 의미 변형은 법령 답변에서도
-    # 놓칠 수 있다. 따라서 근거 종류와 무관하게 deterministic 검증을 통과한 모든
-    # 최종 답변을 semantic judge가 한 번 더 확인한다.
+    # 단일 법령의 단순 설명은 결정론적 검사로 끝낸다. 판례·기관 안내·복수 출처,
+    # 숫자·시점·조건·예외처럼 의미 변형 위험이 있는 답변만 Qwen이 한 번 더 본다.
+    if not requires_semantic_validation(candidate):
+        logger.info("조건부 의미 검증 생략: 단일 법령의 단순 답변")
+        return replace(candidate, validation_mode="deterministic")
+
     report = audit_answer(
         candidate,
         semantic_judge=_semantic_judge(get_aux_llm()),
     )
     if not report.is_valid:
-        return _abstained_after_validation(safe_question, result, report)
+        return _abstained_after_validation(
+            safe_question,
+            result,
+            report,
+            validation_mode="semantic",
+        )
 
-    return candidate
+    return replace(candidate, validation_mode="semantic")

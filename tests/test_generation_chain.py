@@ -115,6 +115,35 @@ class AnswerQuestionTests(unittest.TestCase):
         self.assertEqual("answered", answer.status)
         self.assertIn(prompt_module.DISCLAIMER, answer.text)
         self.assertGreater(len(answer.laws), 0)
+        self.assertEqual((), answer.cases)
+
+    def test_explicit_case_question_adds_case_evidence(self) -> None:
+        answer = answer_question(
+            "집주인이 바뀐 경우 관련 판례는 무엇인가요?",
+            service=build_service(),
+            llm=runtime_llm(
+                "대법원 2011다49523 판결에서는 양수인이 임대인의 지위를 승계한다고 보았습니다."
+            ),
+        )
+
+        self.assertEqual("answered", answer.status)
+        self.assertGreater(len(answer.laws), 0)
+        self.assertEqual(1, len(answer.cases))
+
+    def test_simple_single_law_answer_skips_semantic_judge(self) -> None:
+        main = (
+            "주택임대차보호법 제3조에 따르면 대항력은 "
+            "새 집주인에게도 임차권을 주장할 수 있는 권리입니다."
+        )
+        answer = answer_question(
+            "대항력이 무엇인가요?",
+            service=build_service(),
+            # 응답이 하나뿐이므로 의미 검증을 호출하면 테스트가 실패한다.
+            llm=get_llm(fake_responses=[main]),
+        )
+
+        self.assertEqual("answered", answer.status)
+        self.assertEqual("deterministic", answer.validation_mode)
 
     def test_raw_text_excludes_code_added_disclaimer(self) -> None:
         """인용 검증은 모델이 실제로 쓴 문장만 봐야 한다.
@@ -231,7 +260,7 @@ class EvidenceBudgetTests(unittest.TestCase):
         spy = Spy()
         answer_question(QUESTION, service=spy, llm=runtime_llm("주택임대차보호법 제3조에 따릅니다."))
 
-        self.assertEqual({"k_law": 3, "k_case": 2, "k_guide": 2}, spy.kwargs)
+        self.assertEqual({"k_law": 3, "k_case": 0, "k_guide": 2}, spy.kwargs)
 
 
 class SourceDedupTests(unittest.TestCase):
@@ -589,6 +618,7 @@ class RuntimeSafetyIntegrationTests(unittest.TestCase):
         self.assertEqual("answered", answer.status)
         self.assertEqual(main, answer.raw_text)
         self.assertIn(main, answer.text)
+        self.assertEqual("semantic", answer.validation_mode)
 
     def test_law_only_answer_uses_semantic_judge(self) -> None:
         main = "주택임대차보호법 제3조에 따르면 대항력은 그 다음 날부터 생깁니다."

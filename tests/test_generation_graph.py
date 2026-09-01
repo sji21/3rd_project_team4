@@ -105,10 +105,35 @@ def test_graph_uses_existing_retrieval_counts():
         {
             "question": QUESTION,
             "k_law": chain_module.DEFAULT_K_LAW,
-            "k_case": chain_module.DEFAULT_K_CASE,
+            "k_case": 0,
             "k_guide": chain_module.DEFAULT_K_GUIDE,
-        }
+        },
+        {
+            "question": QUESTION,
+            "k_law": 0,
+            "k_case": chain_module.DEFAULT_K_CASE,
+            "k_guide": 0,
+        },
     ]
+
+
+def test_graph_skips_semantic_validation_for_simple_single_law_answer():
+    service = StaticService(result_with_law("대항력이 무엇인가요?"))
+    main = (
+        "주택임대차보호법 제3조에 따르면 대항력은 "
+        "새 집주인에게도 임차권을 주장할 수 있는 권리입니다."
+    )
+
+    answer = graph_module.answer_question(
+        "대항력이 무엇인가요?",
+        service=service,
+        # 응답이 하나뿐이므로 의미 검증을 호출하면 테스트가 실패한다.
+        llm=get_llm(fake_responses=[main]),
+    )
+
+    assert answer.status == "answered"
+    assert answer.validation_mode == "deterministic"
+    assert service.calls[0]["k_case"] == 0
 
 
 def test_empty_question_abstains_before_retrieval():
@@ -158,7 +183,7 @@ def test_semantic_prompt_injection_branch_can_allow_and_continue():
     )
 
     assert answer.status == "abstained"
-    assert len(service.calls) == 1
+    assert len(service.calls) == 2
 
 
 def test_deterministic_scope_refuses_market_price_before_retrieval():
@@ -196,7 +221,7 @@ def test_semantic_scope_branch_can_allow_and_continue():
     )
 
     assert answer.status == "abstained"
-    assert len(service.calls) == 1
+    assert len(service.calls) == 2
 
 
 def test_custom_refuse_check_runs_before_semantic_scope_judge():
@@ -221,7 +246,7 @@ def test_no_evidence_abstains_without_generation():
     )
 
     assert answer.status == "abstained"
-    assert len(service.calls) == 1
+    assert len(service.calls) == 2
     assert chain_module.prompt_module.NO_EVIDENCE_TEXT in answer.text
 
 
@@ -338,7 +363,8 @@ def test_streamlit_keeps_existing_conversation_then_graph_boundary():
     assert "from src.generation.conversation import resolve_question  # noqa: E402" in text
     assert 'previous_messages = list(st.session_state["chat_messages"])' in text
     assert "resolved = resolve_question(question, previous_messages)" in text
-    assert "answer = answer_question(resolved.standalone)" in text
+    assert "answer = answer_question(" in text
+    assert "service=retrieval_service" in text
 
 
 def test_graph_contains_real_workflow_nodes():

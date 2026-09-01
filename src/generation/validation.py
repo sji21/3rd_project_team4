@@ -103,6 +103,84 @@ def build_semantic_judge_prompt(answer: Answer) -> str:
     )
 
 
+_SEMANTIC_CONDITION_CUES = (
+    "다음 날",
+    "다음날",
+    "당일",
+    "이전",
+    "이후",
+    "전까지",
+    "후부터",
+    "경우에는",
+    "경우에만",
+    "다만",
+    "예외",
+    "제외",
+    "하지 않",
+    "하지 아니",
+    "할 수 없",
+    "받지 못",
+)
+
+_SEMANTIC_QUESTION_CUES = (
+    "언제",
+    "어떻게",
+    "누가",
+    "얼마",
+    "몇 번",
+    "몇번",
+    "몇 프로",
+    "퍼센트",
+    "효력",
+    "권리",
+    "요건",
+    "조건",
+    "필요",
+    "신청",
+    "부담",
+    "계산",
+    "보호",
+    "종료",
+    "갱신",
+    "거절",
+    "돌려받",
+    "받을 수",
+    "할 수",
+    "해야",
+)
+
+
+def requires_semantic_validation(answer: Answer) -> bool:
+    """결정론적 검사만으로 의미 변형 위험을 충분히 낮출 수 없는 답변인지 판정한다.
+
+    숫자 자체와 출처 존재 여부는 코드가 검사하지만, 여러 근거의 관계나 판례·기관
+    안내의 법적 성격, 조건·예외의 의미는 작은 표현 차이로도 달라질 수 있어 Qwen이
+    한 번 더 확인한다. 단일 법령의 단순 설명만 의미 검증을 생략한다.
+    """
+
+    if answer.cases or answer.guides:
+        return True
+
+    citation_audit = audit_citations(answer)
+    supported_mentions = {
+        (mention.kind, mention.text)
+        for mention in citation_audit.mentions
+        if mention.supported
+    }
+    if len(supported_mentions) > 1:
+        return True
+
+    if _extract_values(answer.raw_text):
+        return True
+
+    normalized = unicodedata.normalize("NFKC", answer.raw_text or "").casefold()
+    if any(cue in normalized for cue in _SEMANTIC_CONDITION_CUES):
+        return True
+
+    question = unicodedata.normalize("NFKC", answer.question or "").casefold()
+    return any(cue in question for cue in _SEMANTIC_QUESTION_CUES)
+
+
 @dataclass(frozen=True)
 class _ValueMention:
     kind: str

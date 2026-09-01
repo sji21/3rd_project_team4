@@ -57,6 +57,7 @@ class EvalRow:
     failure_stage: str
     manual_correct: str = ""
     manual_note: str = ""
+    validation_mode: str = "not_applicable"
 
 
 def load_questions(path: Path) -> list[dict]:
@@ -171,6 +172,7 @@ def evaluate_one(
         source_chunk_ids=[source["chunk_id"] for source in answer.sources()],
         elapsed_seconds=round(elapsed, 3),
         failure_stage=infer_failure_stage(answer),
+        validation_mode=answer.validation_mode,
     )
 
 
@@ -225,6 +227,10 @@ def summarize(rows: list[EvalRow]) -> dict:
     correct_refuse = [row for row in refused_targets if row.actual_status == "refused"]
 
     elapsed = [row.elapsed_seconds for row in rows]
+    semantic_rows = [row for row in rows if row.validation_mode == "semantic"]
+    deterministic_rows = [
+        row for row in rows if row.validation_mode == "deterministic"
+    ]
 
     return {
         "n": total,
@@ -244,6 +250,8 @@ def summarize(rows: list[EvalRow]) -> dict:
         "mean_elapsed_seconds": (
             round(sum(elapsed) / len(elapsed), 3) if elapsed else 0.0
         ),
+        "semantic_validation_n": len(semantic_rows),
+        "deterministic_validation_n": len(deterministic_rows),
         "failures": [
             {
                 "qid": row.qid,
@@ -289,6 +297,7 @@ def print_row(row: EvalRow) -> None:
         f"[{row.qid}] {status_flag} "
         f"expected={row.expected_status} actual={row.actual_status} "
         f"gold_recall={retrieval} time={row.elapsed_seconds:.1f}s"
+        f" validation={row.validation_mode}"
     )
     if row.failure_stage:
         print(f"  stage={row.failure_stage}")
@@ -420,6 +429,8 @@ def main() -> None:
     if summary["full_gold_retrieval_rate"] is not None:
         print(f"full_gold_retrieval      {summary['full_gold_retrieval_rate']:.1%}")
     print(f"mean_elapsed             {summary['mean_elapsed_seconds']:.1f}s")
+    print(f"semantic_validation      {summary['semantic_validation_n']}")
+    print(f"deterministic_validation {summary['deterministic_validation_n']}")
     print(f"JSON  {json_path}")
     print(f"CSV   {csv_path}")
     print(f"JSONL {checkpoint_path}")

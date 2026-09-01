@@ -24,12 +24,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 from typing import Any, Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from src.generation import chain as chain_module
+from src.generation.evidence_routing import EvidenceRoute, retrieve_staged
 from src.generation.models import Answer
 from src.retrieval.service import RetrievalResult, RetrievalService
 
@@ -63,9 +65,11 @@ class GenerationGraphState(TypedDict, total=False):
     injection: Any
     scope: Any
     retrieval_result: RetrievalResult
+    evidence_route: EvidenceRoute
     raw_text: str
     candidate: Answer
     validation_report: Any
+    validation_mode: str
     refusal_reason: str
     next_step: Route
     answer: Answer
@@ -254,15 +258,24 @@ def build_generation_graph(
             else chain_module.get_default_service()
         )
 
-        result: RetrievalResult = runtime_service.search(
+        routed = retrieve_staged(
+            runtime_service,
             question,
             k_law=k_law,
             k_case=k_case,
             k_guide=k_guide,
         )
+        result = routed.result
+        logger.info(
+            "근거 라우팅: question_type=%s primary_sufficient=%s cases_added=%s",
+            routed.route.question_type,
+            routed.route.primary_sufficient,
+            routed.route.cases_added,
+        )
 
         return {
             "retrieval_result": result,
+            "evidence_route": routed.route,
             "next_step": (
                 "abstain_no_evidence"
                 if result.is_empty()
@@ -393,13 +406,18 @@ def build_generation_graph(
     ) -> GenerationGraphState:
         report = chain_module.audit_answer(state["candidate"])
 
+        if not report.is_valid:
+            next_step: Route = "abstain_validation"
+        elif chain_module.requires_semantic_validation(state["candidate"]):
+            next_step = "semantic_validation"
+        else:
+            logger.info("조건부 의미 검증 생략: 단일 법령의 단순 답변")
+            next_step = "answer"
+
         return {
             "validation_report": report,
-            "next_step": (
-                "abstain_validation"
-                if not report.is_valid
-                else "semantic_validation"
-            ),
+            "validation_mode": "deterministic",
+            "next_step": next_step,
         }
 
     def semantic_validation_node(
@@ -413,6 +431,7 @@ def build_generation_graph(
 
         return {
             "validation_report": report,
+            "validation_mode": "semantic",
             "next_step": (
                 "abstain_validation"
                 if not report.is_valid
@@ -428,6 +447,7 @@ def build_generation_graph(
                 state["safe_question"],
                 state["retrieval_result"],
                 state["validation_report"],
+                validation_mode=state.get("validation_mode", "deterministic"),
             )
         }
 
@@ -435,7 +455,10 @@ def build_generation_graph(
         state: GenerationGraphState,
     ) -> GenerationGraphState:
         return {
-            "answer": state["candidate"],
+            "answer": replace(
+                state["candidate"],
+                validation_mode=state.get("validation_mode", "deterministic"),
+            ),
         }
 
     builder = StateGraph(GenerationGraphState)
@@ -536,6 +559,7 @@ def build_generation_graph(
         {
             "abstain_validation": "abstain_validation",
             "semantic_validation": "semantic_validation",
+            "answer": "answer",
         },
     )
     builder.add_conditional_edges(
