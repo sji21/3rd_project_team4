@@ -1,135 +1,597 @@
-"""전세ON Generation의 LangGraph 관측용 래퍼.
+"""전세ON Generation LangGraph workflow.
 
-기존 ``src.generation.chain.answer_question()``의 검색·생성·검증 정책은
-이 파일에서 변경하지 않는다.
+기존 Generation 정책과 판단 기준은 ``src.generation.chain`` 및 기존 기능 모듈에
+그대로 둔다. 이 파일은 그 기능들을 LangGraph 노드로 연결해 질문 하나의 실행 순서,
+상태 전달, 조건 분기를 실제로 담당한다.
 
-LangGraph는 현재 Generation runtime을 하나의 명시적인 실행 그래프로 감싸는
-역할만 한다. Retrieval 설정, LLM 설정, 프롬프트, validation, ANSWER/ABSTAIN/
-REFUSE 조건은 모두 기존 ``answer_question()``에 그대로 위임한다.
+실제 서비스 흐름:
 
-LangSmith tracing이 활성화된 경우 Graph 입력에 사용자 원문 개인정보나 비밀값이
-남지 않도록, Graph에 넣기 전에 기존 프로젝트와 동일한 마스킹 규칙을 적용한다.
+    input_guard
+      → prompt injection deterministic check
+      → 필요 시 prompt injection semantic check
+      → scope deterministic check
+      → 필요 시 scope semantic check
+      → retrieval
+      → generation
+      → grounding
+      → deterministic validation
+      → semantic validation
+      → answered / abstained / refused
+
+기존 ``chain.answer_question()``은 삭제하거나 수정하지 않는다. 기존 테스트·호환
+경로로 그대로 남기고, Streamlit은 이미 이 모듈의 ``answer_question()``을 사용한다.
 """
 
 from __future__ import annotations
 
-import importlib
-from typing import Any, Callable, TypedDict
+import logging
+from typing import Any, Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from src.document_check.privacy import mask_sensitive_text
-from src.security.secret_filter import redact_secrets
+from src.generation import chain as chain_module
+from src.generation.models import Answer
+from src.retrieval.service import RetrievalResult, RetrievalService
 
 
-AnswerCallable = Callable[[str], Any]
+logger = logging.getLogger(__name__)
+
+
+Route = Literal[
+    "abstain_no_input",
+    "injection_check",
+    "injection_semantic",
+    "scope_check",
+    "scope_semantic",
+    "retrieval",
+    "generate",
+    "grounding",
+    "deterministic_validation",
+    "semantic_validation",
+    "refuse",
+    "abstain_no_evidence",
+    "abstain_generation",
+    "abstain_validation",
+    "answer",
+]
 
 
 class GenerationGraphState(TypedDict, total=False):
-    """Generation Graph가 전달하는 최소 상태."""
+    """질문 하나를 처리하면서 LangGraph 노드 사이에 전달하는 상태."""
 
-    question: str
-    answer: Any
+    safe_question: str
+    injection: Any
+    scope: Any
+    retrieval_result: RetrievalResult
+    raw_text: str
+    candidate: Answer
+    validation_report: Any
+    refusal_reason: str
+    next_step: Route
+    answer: Answer
 
 
-def _safe_question(question: str) -> str:
-    """Graph trace에 넣기 전에 기존 프로젝트 규칙으로 민감정보를 가린다."""
-
-    secret_masked = redact_secrets(question or "").text
-    return mask_sensitive_text(secret_masked)
+def _next_step(state: GenerationGraphState) -> Route:
+    return state["next_step"]
 
 
 def build_generation_graph(
-    answer_fn: AnswerCallable | None = None,
+    *,
+    service: RetrievalService | None = None,
+    llm=None,
+    k_law: int = chain_module.DEFAULT_K_LAW,
+    k_case: int = chain_module.DEFAULT_K_CASE,
+    k_guide: int = chain_module.DEFAULT_K_GUIDE,
+    refuse_check: Callable[[str], bool] | None = None,
+    auxiliary_llm=None,
 ):
-    """기존 answer_question()을 단일 노드로 실행하는 Graph를 만든다.
+    """기존 Generation 정책을 그대로 사용하는 실행 Graph를 만든다.
 
-    ``answer_fn``을 주지 않으면 실행 시점의
-    ``src.generation.chain.answer_question``을 사용한다.
-
-    테스트에서는 가짜 함수를 주입할 수 있도록 의존성을 인자로 열어 두되,
-    실제 서비스의 기존 Generation 로직은 복제하지 않는다.
+    ``chain.answer_question()`` 안에 있던 판단 기준을 새로 정의하지 않는다.
+    prompt injection, scope, Retrieval, prompt/LLM, grounding, validation은 기존
+    함수와 상수를 그대로 호출하고 LangGraph는 실행 순서와 분기만 담당한다.
     """
+
+    runtime_aux_llm = auxiliary_llm if auxiliary_llm is not None else llm
+
+    def get_aux_llm():
+        nonlocal runtime_aux_llm
+        if runtime_aux_llm is None:
+            # chain.answer_question()과 동일한 보조 Qwen 설정.
+            runtime_aux_llm = chain_module.get_llm(
+                temperature=0.0,
+                max_tokens=160,
+                timeout=90,
+                max_retries=0,
+            )
+        return runtime_aux_llm
+
+    def input_guard_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        return {
+            "next_step": (
+                "abstain_no_input"
+                if not question.strip()
+                else "injection_check"
+            )
+        }
+
+    def abstain_no_input_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        return {
+            "answer": Answer(
+                question=question,
+                status="abstained",
+                text=(
+                    f"{chain_module.prompt_module.NO_EVIDENCE_TEXT}\n\n"
+                    f"{chain_module.prompt_module.DISCLAIMER}"
+                ),
+            )
+        }
+
+    def injection_check_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        injection = chain_module.classify_prompt_injection(question)
+
+        if injection.blocked:
+            return {
+                "injection": injection,
+                "refusal_reason": "prompt_injection",
+                "next_step": "refuse",
+            }
+
+        if injection.needs_semantic_review:
+            return {
+                "injection": injection,
+                "next_step": "injection_semantic",
+            }
+
+        return {
+            "injection": injection,
+            "next_step": "scope_check",
+        }
+
+    def injection_semantic_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        injection = chain_module.classify_prompt_injection(
+            question,
+            semantic_judge=chain_module._injection_judge(get_aux_llm()),
+        )
+
+        if injection.blocked:
+            return {
+                "injection": injection,
+                "refusal_reason": "prompt_injection",
+                "next_step": "refuse",
+            }
+
+        return {
+            "injection": injection,
+            "next_step": "scope_check",
+        }
+
+    def scope_check_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        scope = chain_module.classify_scope(question)
+
+        if scope.out_of_scope:
+            return {
+                "scope": scope,
+                "refusal_reason": scope.reason,
+                "next_step": "refuse",
+            }
+
+        # 기존 answer_question()과 동일하게 custom refuse_check는
+        # semantic scope judge보다 먼저 적용한다.
+        if refuse_check is not None and refuse_check(question):
+            return {
+                "scope": scope,
+                "refusal_reason": "custom_scope",
+                "next_step": "refuse",
+            }
+
+        if scope.needs_semantic_review:
+            return {
+                "scope": scope,
+                "next_step": "scope_semantic",
+            }
+
+        return {
+            "scope": scope,
+            "next_step": "retrieval",
+        }
+
+    def scope_semantic_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        scope = chain_module.classify_scope(
+            question,
+            semantic_judge=chain_module._scope_judge(get_aux_llm()),
+        )
+
+        if scope.out_of_scope:
+            return {
+                "scope": scope,
+                "refusal_reason": scope.reason,
+                "next_step": "refuse",
+            }
+
+        return {
+            "scope": scope,
+            "next_step": "retrieval",
+        }
+
+    def refuse_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        return {
+            "answer": chain_module._refused_answer(
+                state["safe_question"],
+                state["refusal_reason"],
+            )
+        }
+
+    def retrieval_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+
+        # 안전성/범위 검사를 통과한 뒤에만 검색 서비스를 만든다.
+        # 기존 chain의 Retrieval-before/after 경계를 그대로 유지한다.
+        runtime_service = (
+            service if service is not None
+            else chain_module.get_default_service()
+        )
+
+        result: RetrievalResult = runtime_service.search(
+            question,
+            k_law=k_law,
+            k_case=k_case,
+            k_guide=k_guide,
+        )
+
+        return {
+            "retrieval_result": result,
+            "next_step": (
+                "abstain_no_evidence"
+                if result.is_empty()
+                else "generate"
+            ),
+        }
+
+    def abstain_no_evidence_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        return {
+            "answer": Answer(
+                question=question,
+                status="abstained",
+                text=(
+                    f"{chain_module.prompt_module.NO_EVIDENCE_TEXT}\n\n"
+                    f"{chain_module.prompt_module.DISCLAIMER}"
+                ),
+            )
+        }
+
+    def generate_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        result = state["retrieval_result"]
+
+        # 기존 runtime과 동일하게 main 생성 호출은 retry를 끈다.
+        main_llm = (
+            llm if llm is not None
+            else chain_module.get_llm(max_retries=0)
+        )
+        qa_chain = chain_module.build_qa_chain(main_llm)
+
+        try:
+            raw_text = qa_chain.invoke(
+                {
+                    "context": chain_module.prompt_module.format_context(result),
+                    "question": question,
+                }
+            )
+        except Exception as error:
+            logger.warning(
+                "LLM 호출이 실패했습니다: %s",
+                error,
+                exc_info=True,
+            )
+            return {
+                "next_step": "abstain_generation",
+            }
+
+        if not raw_text.strip():
+            logger.warning(
+                "모델이 빈 답변을 반환했습니다. 사고 과정이 토큰 상한(%s)을 모두 "
+                "소진했을 가능성이 큽니다. JEONSEON_LLM_MAX_TOKENS 를 늘리거나 "
+                "사고 과정 비활성화를 확인하세요.",
+                chain_module.llm_module.LLM_MAX_TOKENS,
+            )
+            return {
+                "next_step": "abstain_generation",
+            }
+
+        return {
+            "raw_text": raw_text,
+            "next_step": "grounding",
+        }
+
+    def abstain_generation_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        result = state["retrieval_result"]
+
+        return {
+            "answer": Answer(
+                question=question,
+                status="abstained",
+                text=(
+                    f"{chain_module.prompt_module.GENERATION_FAILED_TEXT}\n\n"
+                    f"{chain_module.prompt_module.DISCLAIMER}"
+                ),
+                laws=tuple(result.laws),
+                cases=tuple(result.cases),
+                guides=tuple(result.guides),
+            )
+        }
+
+    def grounding_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        question = state["safe_question"]
+        result = state["retrieval_result"]
+        raw_text = state["raw_text"]
+
+        evidences = tuple(result.laws + result.cases + result.guides)
+        grounded_text = chain_module.ground_answer_conditions(
+            raw_text,
+            evidences,
+        )
+
+        if grounded_text != raw_text:
+            logger.info(
+                "검색 근거의 시점 표현으로 생성 답변의 오기를 교정했습니다."
+            )
+
+        candidate = Answer(
+            question=question,
+            status="answered",
+            text=(
+                f"{grounded_text}\n\n"
+                f"{chain_module.prompt_module.DISCLAIMER}"
+            ),
+            raw_text=grounded_text,
+            laws=tuple(result.laws),
+            cases=tuple(result.cases),
+            guides=tuple(result.guides),
+        )
+
+        return {
+            "raw_text": grounded_text,
+            "candidate": candidate,
+            "next_step": "deterministic_validation",
+        }
+
+    def deterministic_validation_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        report = chain_module.audit_answer(state["candidate"])
+
+        return {
+            "validation_report": report,
+            "next_step": (
+                "abstain_validation"
+                if not report.is_valid
+                else "semantic_validation"
+            ),
+        }
+
+    def semantic_validation_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        candidate = state["candidate"]
+        report = chain_module.audit_answer(
+            candidate,
+            semantic_judge=chain_module._semantic_judge(get_aux_llm()),
+        )
+
+        return {
+            "validation_report": report,
+            "next_step": (
+                "abstain_validation"
+                if not report.is_valid
+                else "answer"
+            ),
+        }
+
+    def abstain_validation_node(
+        state: GenerationGraphState,
+    ) -> GenerationGraphState:
+        return {
+            "answer": chain_module._abstained_after_validation(
+                state["safe_question"],
+                state["retrieval_result"],
+                state["validation_report"],
+            )
+        }
 
     def answer_node(
         state: GenerationGraphState,
     ) -> GenerationGraphState:
-        runtime_answer_fn = answer_fn
-
-        if runtime_answer_fn is None:
-            # chain.py와 순환 import를 만들지 않고
-            # 실행 시점에 기존 공개 진입점을 읽는다.
-            chain_module = importlib.import_module(
-                "src.generation.chain"
-            )
-            runtime_answer_fn = chain_module.answer_question
-
-        answer = runtime_answer_fn(
-            state["question"]
-        )
-
         return {
-            "answer": answer,
+            "answer": state["candidate"],
         }
 
-    builder = StateGraph(
-        GenerationGraphState
-    )
+    builder = StateGraph(GenerationGraphState)
 
+    builder.add_node("input_guard", input_guard_node)
+    builder.add_node("abstain_no_input", abstain_no_input_node)
+    builder.add_node("injection_check", injection_check_node)
+    builder.add_node("injection_semantic", injection_semantic_node)
+    builder.add_node("scope_check", scope_check_node)
+    builder.add_node("scope_semantic", scope_semantic_node)
+    builder.add_node("refuse", refuse_node)
+    builder.add_node("retrieval", retrieval_node)
+    builder.add_node("abstain_no_evidence", abstain_no_evidence_node)
+    builder.add_node("generate", generate_node)
+    builder.add_node("abstain_generation", abstain_generation_node)
+    builder.add_node("grounding", grounding_node)
     builder.add_node(
-        "answer_question",
-        answer_node,
+        "deterministic_validation",
+        deterministic_validation_node,
+    )
+    builder.add_node("semantic_validation", semantic_validation_node)
+    builder.add_node("abstain_validation", abstain_validation_node)
+    builder.add_node("answer", answer_node)
+
+    builder.add_edge(START, "input_guard")
+
+    builder.add_conditional_edges(
+        "input_guard",
+        _next_step,
+        {
+            "abstain_no_input": "abstain_no_input",
+            "injection_check": "injection_check",
+        },
+    )
+    builder.add_edge("abstain_no_input", END)
+
+    builder.add_conditional_edges(
+        "injection_check",
+        _next_step,
+        {
+            "refuse": "refuse",
+            "injection_semantic": "injection_semantic",
+            "scope_check": "scope_check",
+        },
+    )
+    builder.add_conditional_edges(
+        "injection_semantic",
+        _next_step,
+        {
+            "refuse": "refuse",
+            "scope_check": "scope_check",
+        },
     )
 
-    builder.add_edge(
-        START,
-        "answer_question",
+    builder.add_conditional_edges(
+        "scope_check",
+        _next_step,
+        {
+            "refuse": "refuse",
+            "scope_semantic": "scope_semantic",
+            "retrieval": "retrieval",
+        },
+    )
+    builder.add_conditional_edges(
+        "scope_semantic",
+        _next_step,
+        {
+            "refuse": "refuse",
+            "retrieval": "retrieval",
+        },
+    )
+    builder.add_edge("refuse", END)
+
+    builder.add_conditional_edges(
+        "retrieval",
+        _next_step,
+        {
+            "abstain_no_evidence": "abstain_no_evidence",
+            "generate": "generate",
+        },
+    )
+    builder.add_edge("abstain_no_evidence", END)
+
+    builder.add_conditional_edges(
+        "generate",
+        _next_step,
+        {
+            "abstain_generation": "abstain_generation",
+            "grounding": "grounding",
+        },
+    )
+    builder.add_edge("abstain_generation", END)
+    builder.add_edge("grounding", "deterministic_validation")
+
+    builder.add_conditional_edges(
+        "deterministic_validation",
+        _next_step,
+        {
+            "abstain_validation": "abstain_validation",
+            "semantic_validation": "semantic_validation",
+        },
+    )
+    builder.add_conditional_edges(
+        "semantic_validation",
+        _next_step,
+        {
+            "abstain_validation": "abstain_validation",
+            "answer": "answer",
+        },
     )
 
-    builder.add_edge(
-        "answer_question",
-        END,
-    )
+    builder.add_edge("abstain_validation", END)
+    builder.add_edge("answer", END)
 
     return builder.compile()
 
 
-# 기본 실행용 Graph는 import 시 한 번만 compile한다.
-_DEFAULT_GRAPH = build_generation_graph()
-
-
-def answer_with_graph(
+def answer_question(
     question: str,
-    *,
-    graph=None,
-):
-    """마스킹된 질문을 LangGraph를 통해 기존 Generation runtime에 전달한다.
+    service: RetrievalService | None = None,
+    llm=None,
+    k_law: int = chain_module.DEFAULT_K_LAW,
+    k_case: int = chain_module.DEFAULT_K_CASE,
+    k_guide: int = chain_module.DEFAULT_K_GUIDE,
+    refuse_check: Callable[[str], bool] | None = None,
+    auxiliary_llm=None,
+) -> Answer:
+    """LangGraph가 실행·상태·분기를 담당하는 Generation 진입점.
 
-    기존 ``answer_question()``의 반환값을 그대로 돌려준다.
+    raw 사용자 입력이 LangSmith의 Graph root input에 기록되기 전에
+    기존 ``chain._safe_question()``과 동일한 마스킹을 먼저 적용한다.
     """
 
-    safe_question = _safe_question(
-        question
+    safe_question = chain_module._safe_question(question)
+
+    graph = build_generation_graph(
+        service=service,
+        llm=llm,
+        k_law=k_law,
+        k_case=k_case,
+        k_guide=k_guide,
+        refuse_check=refuse_check,
+        auxiliary_llm=auxiliary_llm,
     )
 
-    runtime_graph = (
-        graph
-        if graph is not None
-        else _DEFAULT_GRAPH
-    )
-
-    state = runtime_graph.invoke(
+    state = graph.invoke(
         {
-            "question": safe_question,
+            "safe_question": safe_question,
         },
         config={
             "run_name": "jeonseon_generation_graph",
         },
     )
 
-    if "answer" not in state:
-        raise RuntimeError(
-            "Generation Graph가 answer를 반환하지 않았습니다."
-        )
+    answer = state.get("answer")
+    if answer is None:
+        raise RuntimeError("Generation Graph가 answer를 반환하지 않았습니다.")
 
-    return state["answer"]
+    return answer
