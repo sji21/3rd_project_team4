@@ -31,6 +31,11 @@ def install_ui_test_stubs(monkeypatch) -> None:
     chain_module = ModuleType("src.generation.chain")
     chain_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
 
+    # Streamlit의 Generation 진입점이 LangGraph로 바뀌었으므로
+    # UI 테스트에서도 해당 import 경계만 같은 FakeAnswer로 대체한다.
+    graph_module = ModuleType("src.generation.graph")
+    graph_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
+
     conversation_module = ModuleType("src.generation.conversation")
 
     class ResolvedQuestion:
@@ -46,6 +51,7 @@ def install_ui_test_stubs(monkeypatch) -> None:
 
     monkeypatch.setitem(sys.modules, "dotenv", dotenv_module)
     monkeypatch.setitem(sys.modules, "src.generation.chain", chain_module)
+    monkeypatch.setitem(sys.modules, "src.generation.graph", graph_module)
     monkeypatch.setitem(
         sys.modules,
         "src.generation.conversation",

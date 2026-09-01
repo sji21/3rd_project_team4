@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
-from src.generation.chain import answer_question  # noqa: E402
+from src.generation.graph import answer_question  # noqa: E402
 from src.generation.conversation import resolve_question  # noqa: E402
 from src.generation.models import Answer  # noqa: E402
 
