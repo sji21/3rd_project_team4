@@ -5,6 +5,7 @@ from src.generation.validation import (
     SemanticJudgement,
     audit_answer,
     ground_answer_conditions,
+    requires_semantic_validation,
     validate_answer,
 )
 from src.retrieval.service import Evidence
@@ -546,6 +547,80 @@ class ValidationTests(unittest.TestCase):
         )
 
         self.assertTrue(validate_answer(answer))
+
+
+class ConditionalSemanticValidationTests(unittest.TestCase):
+    def test_simple_single_law_explanation_uses_deterministic_validation(self):
+        ev = evidence(
+            "law-3",
+            "주택임대차보호법 제3조",
+            "대항력은 제3자에게 임차권을 주장할 수 있는 효력이다.",
+        )
+        answer = Answer(
+            question="대항력이 무엇인가요?",
+            status="answered",
+            text="",
+            raw_text="주택임대차보호법 제3조에 따르면 대항력은 임차권을 주장할 수 있는 효력입니다.",
+            laws=(ev,),
+        )
+
+        self.assertFalse(requires_semantic_validation(answer))
+
+    def test_period_value_requires_semantic_validation(self):
+        ev = evidence("law-6", "주택임대차보호법 제6조", "기간은 2년이다.")
+        answer = Answer(
+            question="기간은 얼마인가요?",
+            status="answered",
+            text="",
+            raw_text="주택임대차보호법 제6조에 따르면 기간은 2년입니다.",
+            laws=(ev,),
+        )
+
+        self.assertTrue(requires_semantic_validation(answer))
+
+    def test_case_or_guide_requires_semantic_validation(self):
+        case = evidence("case-1", "대법원 2020다12345", "판례", "case")
+        guide = evidence("guide-1", "국세청 안내", "안내", "guide")
+
+        self.assertTrue(
+            requires_semantic_validation(
+                Answer("q", "answered", "", raw_text="대법원 2020다12345 판결입니다.", cases=(case,))
+            )
+        )
+        self.assertTrue(
+            requires_semantic_validation(
+                Answer("q", "answered", "", raw_text="국세청 안내에 따릅니다.", guides=(guide,))
+            )
+        )
+
+    def test_condition_or_exception_requires_semantic_validation(self):
+        ev = evidence("law-3", "주택임대차보호법 제3조", "본문")
+        answer = Answer(
+            "q",
+            "answered",
+            "",
+            raw_text="주택임대차보호법 제3조에 따르면 다만 예외가 있습니다.",
+            laws=(ev,),
+        )
+
+        self.assertTrue(requires_semantic_validation(answer))
+
+    def test_legal_action_or_effect_question_requires_semantic_validation(self):
+        ev = evidence("law-3-3", "주택임대차보호법 제3조의3", "본문")
+        for question in (
+            "임차권등기명령은 언제 신청할 수 있나요?",
+            "비용은 누가 부담하나요?",
+            "특약의 효력이 있나요?",
+        ):
+            answer = Answer(
+                question,
+                "answered",
+                "",
+                raw_text="주택임대차보호법 제3조의3에 따른 설명입니다.",
+                laws=(ev,),
+            )
+            with self.subTest(question=question):
+                self.assertTrue(requires_semantic_validation(answer))
 
 
 if __name__ == "__main__":

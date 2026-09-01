@@ -30,6 +30,7 @@ def install_ui_test_stubs(monkeypatch) -> None:
 
     chain_module = ModuleType("src.generation.chain")
     chain_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
+    chain_module.get_default_service = lambda: object()
 
     conversation_module = ModuleType("src.generation.conversation")
 

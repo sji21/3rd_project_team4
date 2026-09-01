@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
-from src.generation.chain import answer_question  # noqa: E402
+from src.generation.chain import answer_question, get_default_service  # noqa: E402
 from src.generation.conversation import resolve_question  # noqa: E402
 from src.generation.models import Answer  # noqa: E402
 
@@ -45,6 +45,13 @@ WELCOME_MESSAGE = (
     "안녕하세요. 전세계약 과정에서 궁금한 권리나 절차를 질문해 주세요. "
     "확인 가능한 근거와 함께 안내해 드릴게요."
 )
+
+
+@st.cache_resource(show_spinner=False)
+def load_retrieval_service():
+    """KURE-v1 검색 서비스를 앱 시작 시 한 번 준비하고 모든 rerun에서 재사용한다."""
+
+    return get_default_service()
 
 
 def configure_page() -> None:
@@ -721,7 +728,7 @@ def render_live_elapsed_timer() -> None:
     )
 
 
-def process_question(question: str) -> None:
+def process_question(question: str, retrieval_service) -> None:
     # 현재 질문을 넣기 전 대화만 후속 질문 해석에 사용한다.
     previous_messages = list(st.session_state["chat_messages"])
 
@@ -746,9 +753,10 @@ def process_question(question: str) -> None:
 
         try:
             resolved = resolve_question(question, previous_messages)
-            # RetrievalService를 여기서 먼저 만들지 않는다. answer_question()이
-            # prompt injection/scope를 먼저 검사한 뒤 필요한 질문에만 Retrieval을 연다.
-            answer = answer_question(resolved.standalone)
+            answer = answer_question(
+                resolved.standalone,
+                service=retrieval_service,
+            )
         except Exception:
             # 사용자 화면에는 내부 예외를 숨기되 서버 터미널에는 traceback을 남긴다.
             logger.exception("Streamlit 질문 처리 중 예외가 발생했습니다.")
@@ -779,6 +787,17 @@ def main() -> None:
     render_sidebar()
     render_header()
 
+    try:
+        with st.spinner("검색 모델을 준비하고 있습니다. 처음 한 번만 실행됩니다..."):
+            retrieval_service = load_retrieval_service()
+    except Exception:
+        logger.exception("Streamlit 검색 모델 초기화 중 예외가 발생했습니다.")
+        st.error(
+            "검색 모델을 준비하지 못했습니다. "
+            "검색 인덱스와 로컬 환경을 확인한 뒤 앱을 다시 실행해 주세요."
+        )
+        return
+
     chat_area = st.container(key="chat_area")
     with chat_area:
         render_history()
@@ -788,7 +807,7 @@ def main() -> None:
     )
     if question and question.strip():
         with chat_area:
-            process_question(question.strip())
+            process_question(question.strip(), retrieval_service)
 
 
 if __name__ == "__main__":

@@ -10,10 +10,14 @@ def test_streamlit_ui_is_chat_first():
     assert "st.chat_input" in TEXT
 
 
-def test_streamlit_uses_generation_entrypoint_without_preloading_retrieval():
+def test_streamlit_preloads_and_reuses_retrieval_service():
     assert "answer_question" in TEXT
-    assert "get_default_service" not in TEXT
-    assert "load_retrieval_service" not in TEXT
+    assert "get_default_service" in TEXT
+    assert "@st.cache_resource(show_spinner=False)" in TEXT
+    assert "def load_retrieval_service()" in TEXT
+    assert "retrieval_service = load_retrieval_service()" in TEXT
+    assert "service=retrieval_service" in TEXT
+    assert "처음 한 번만 실행됩니다" in TEXT
 
 
 def test_ocr_is_not_wired_yet():
@@ -75,7 +79,9 @@ def test_streamlit_wires_multiturn_before_existing_answer_chain():
     assert "from src.generation.conversation import resolve_question" in TEXT
     assert 'previous_messages = list(st.session_state["chat_messages"])' in TEXT
     assert "resolve_question(question, previous_messages)" in TEXT
-    assert "answer_question(resolved.standalone)" in TEXT
+    assert "answer_question(" in TEXT
+    assert "resolved.standalone" in TEXT
+    assert "service=retrieval_service" in TEXT
 
 
 def test_answer_raw_text_is_kept_for_followup_context():
@@ -121,6 +127,6 @@ def test_streamlit_logs_server_exception_without_showing_details():
 
 def test_live_timer_runs_during_blocking_answer_call():
     timer_pos = TEXT.index("render_live_elapsed_timer()")
-    answer_pos = TEXT.index("answer = answer_question(resolved.standalone)")
+    answer_pos = TEXT.index("answer = answer_question(")
     clear_pos = TEXT.index("timer_slot.empty()")
     assert timer_pos < answer_pos < clear_pos
