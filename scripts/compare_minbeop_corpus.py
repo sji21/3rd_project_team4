@@ -201,20 +201,45 @@ def main() -> int:
         }
 
         # A) dev 회귀
+        #
+        # 분모는 **법령 정답만** 센다. dev 의 gold_articles 에는 공식 안내 정답
+        # (guide-국세청-미납국세열람 등)이 섞여 있는데, 이 비교는 법령 묶음만
+        # 검색하므로(k_guide=0) 안내 정답은 구조적으로 도달할 수 없다. 분모에
+        # 남기면 천장이 씌워진 수치가 나와 민법 때문에 잃은 것인지 원래 못 찾는
+        # 것인지 구분되지 않는다.
+        law_gold = {
+            metadata["article_id"]
+            for metadata in chunkmaps["base"].values()
+            if metadata.get("doc_type") in ("law", "decree", "rule")
+        }
+
         print("\n[A] dev 법령 회귀", flush=True)
         report["dev"] = []
+        unreachable: list[str] = []
         for item in read_jsonl(REPO / "data/eval/dev.jsonl"):
             gold = item.get("gold_articles") or []
-            row = {"qid": item["qid"], "question": item["question"], "gold": gold}
+            scored = [g for g in gold if g in law_gold]
+            unreachable.extend(g for g in gold if g not in law_gold)
+            row = {
+                "qid": item["qid"],
+                "question": item["question"],
+                "gold": gold,
+                "law_gold": scored,
+            }
             for name in VARIANTS:
                 ranked = article_ids(services[name], chunkmaps[name],
                                      item["question"], args.k)
                 row[name] = ranked
-                row[f"{name}_top3"] = sum(1 for g in gold if g in ranked[:3])
-                row[f"{name}_top5"] = sum(1 for g in gold if g in ranked[:5])
+                row[f"{name}_top3"] = sum(1 for g in scored if g in ranked[:3])
+                row[f"{name}_top5"] = sum(1 for g in scored if g in ranked[:5])
             report["dev"].append(row)
 
-        total_gold = sum(len(r["gold"]) for r in report["dev"])
+        report["unscored_gold"] = unreachable
+        if unreachable:
+            print(f"  법령 검색으로 도달 불가라 분모에서 제외한 정답 "
+                  f"{len(unreachable)}개: {unreachable}", flush=True)
+
+        total_gold = sum(len(r["law_gold"]) for r in report["dev"])
         for name in VARIANTS:
             top3 = sum(r[f"{name}_top3"] for r in report["dev"])
             top5 = sum(r[f"{name}_top5"] for r in report["dev"])
@@ -249,12 +274,22 @@ def main() -> int:
                 row[name] = article_ids(services[name], chunkmaps[name],
                                         question, args.k)
             report["new_questions"].append(row)
+        # 생성 파트는 법령 3건만 쓴다(DEFAULT_K_LAW=3). TOP3 에서 밀려난 조문은
+        # 순위가 한 칸 내려간 것이 아니라 **생성 근거에서 사라진 것**이므로 따로 센다.
         for name in VARIANTS:
             moved = [r["no"] for r in report["new_questions"]
                      if r["base"][:3] != r[name][:3]]
             entered = [r["no"] for r in report["new_questions"]
                        if any(a.startswith("민법") for a in r[name][:3])]
+            dropped = {
+                r["no"]: [a for a in r["base"][:3] if a not in r[name][:3]]
+                for r in report["new_questions"]
+                if [a for a in r["base"][:3] if a not in r[name][:3]]
+            }
+            report.setdefault("dropped_from_top3", {})[name] = dropped
             print(f"  {name:6s} TOP3 변동 {moved}  민법 TOP3 진입 {entered}", flush=True)
+            for number, lost in dropped.items():
+                print(f"         {number}번 생성 근거에서 빠짐: {lost}", flush=True)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=1),
