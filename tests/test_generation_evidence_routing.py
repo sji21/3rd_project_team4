@@ -1,4 +1,4 @@
-"""PATCH-031 단계형 근거 라우팅 회귀 테스트."""
+"""PATCH-034 단계형 근거 라우팅 회귀 테스트."""
 
 from __future__ import annotations
 

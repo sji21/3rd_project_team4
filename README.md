@@ -290,7 +290,7 @@ python scripts/build_project_plan_pdf.py
 - `docs/contract-check.md` — 임대차계약서 작성 항목·특약 점검 기준과 한계
 - `docs/chunk-schema.md` — 수집 문서에서 SQLite·Chroma까지의 청크 스키마와 검증 규칙
 - `docs/eval-audit.md` — 검색 평가셋·실험 결과 감사와 한계
-- `docs/eval-patch031-conditional-semantic.md` — 조건부 의미 검증 Dev 27문항 응답 시간과 실패 분석
+- `docs/eval-patch034-conditional-semantic.md` — 조건부 의미 검증 Dev 27문항 응답 시간과 실패 분석
 - `docs/retrieval-handoff.md` — 검색 진입점 사용법, 실행 준비, 참고 데이터 (생성·앱 담당용)
 - `docs/case-data-handoff.md` — PATCH-018 표준 판례 청크 기반 적재·평가·임베딩 비교 실행법
 - `docs/planning/project-plan.md` — 프로젝트 범위, 아키텍처, 평가와 단계별 실행 기획
