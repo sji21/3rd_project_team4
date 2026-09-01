@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-01
+
+### Changed
+
+- PATCH-035 prefers the configured RunPod Ollama endpoint and automatically falls back to a compatible local Ollama instance when the remote endpoint is unavailable, lacks the configured model, or fails during generation. It also documents endpoint configuration and reports the active endpoint in diagnostics. (commit: `8debb71`)
+
+### Fixed (Bug Fixes)
+
+- Made the Ollama probe failure test independent of whether a developer already has local Ollama running by explicitly making both the primary and fallback candidates unavailable. (merge integration)
+
 ## 2026-08-31
 
 ### Changed

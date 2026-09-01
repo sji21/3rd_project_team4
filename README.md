@@ -61,6 +61,37 @@ Windows PowerShell에서는 `cp` 대신 다음 명령을 쓴다.
 Copy-Item .env.example .env
 ```
 
+### Ollama와 RunPod 연결
+
+기본 설정은 이 PC에서 실행 중인 Ollama(`http://localhost:11434`)를 사용한다.
+
+```bash
+ollama pull qwen3:8b-q4_K_M
+ollama serve
+```
+
+RunPod의 Ollama를 직접 호출하려면 Pod 템플릿에서 `11434/http`를 공개하고 `.env`의
+`JEONSEON_LLM_BASE_URL`을 현재 Pod ID에 맞게 변경한다. Pod를 새로 만들면 ID도 바뀌므로
+예전 URL을 재사용하지 않는다.
+
+```dotenv
+JEONSEON_LLM_BASE_URL=https://YOUR_POD_ID-11434.proxy.runpod.net/v1
+JEONSEON_LLM_MODEL=qwen3:8b-q4_K_M
+```
+
+RunPod 주소가 설정되어 있어도 연결할 수 없거나 해당 모델이 없으면 로컬
+`http://localhost:11434`로 자동 전환한다. 자동 전환을 사용하려면 로컬에서도
+`ollama serve`가 실행 중이고 같은 모델을 받아 둔 상태여야 한다. RunPod 주소를
+설정하지 않으면 처음부터 로컬 Ollama만 사용한다.
+
+Ollama API 자체에는 인증이 없으므로 개인 개발에서는 11434를 공개하는 대신 Full SSH
+터널로 연결하는 방식을 권장한다. 터널을 사용하면 `.env`는 기본 localhost 값을 유지한다.
+
+```bash
+ssh -N -L 11434:127.0.0.1:11434 \
+  root@PUBLIC_IP -p MAPPED_PORT -i ~/.ssh/id_ed25519
+```
+
 스캔 PDF를 처리하려면 Tesseract와 한국어 언어 데이터가 필요하다. 텍스트 레이어가 있는 PDF는 Tesseract 없이도 처리된다. macOS·Windows 설치법과 기능 한계는 `docs/registry-check.md`를 참고한다.
 
 ## 현재 화면 기능

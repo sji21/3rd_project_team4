@@ -1,4 +1,4 @@
-"""PATCH-021 로컬 LLM 연결 테스트.
+"""PATCH-021 Ollama LLM 연결 테스트.
 
 실제 Ollama 를 부르지 않는다. 확인하려는 것은 접속 설정이 환경 변수대로 만들어
 지는지, 그리고 Qwen3 의 사고 과정이 답변에서 제거되는지다.
@@ -20,12 +20,12 @@ class GetLlmTests(unittest.TestCase):
         self.assertIsInstance(model, FakeListChatModel)
         self.assertEqual("안녕하세요", model.invoke("아무 질문").content)
 
-    def test_real_model_points_at_local_ollama(self) -> None:
+    def test_real_model_points_at_configured_ollama(self) -> None:
         model = llm_module.get_llm()
 
-        # Ollama 의 OpenAI 호환 엔드포인트여야 한다. 여기가 OpenAI 로 향하면
-        # 로컬 모델을 쓰겠다는 전제가 조용히 깨진다.
+        # 로컬 기본값과 RunPod 환경변수 모두 같은 native Ollama 경로를 사용한다.
         self.assertIn("11434", model.openai_api_base)
+        self.assertEqual(llm_module._native_base_url(), model.openai_api_base)
         self.assertEqual(llm_module.LLM_MODEL, model.model_name)
 
     def test_max_tokens_caps_runaway_answers(self) -> None:
@@ -53,6 +53,123 @@ class GetLlmTests(unittest.TestCase):
         model = llm_module.get_llm(temperature=0.0)
 
         self.assertEqual(0.0, model.temperature)
+
+    def test_native_request_sets_runpod_compatible_user_agent(self) -> None:
+        """RunPod 프록시는 urllib 기본 User-Agent 요청을 403으로 거부한다."""
+        from unittest import mock
+
+        class FakeResponse:
+            def __init__(self, payload: bytes):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self) -> bytes:
+                return self.payload
+
+        captured = []
+
+        def fake_urlopen(request, timeout):
+            captured.append(request.get_header("User-agent"))
+            if request.full_url.endswith("/api/tags"):
+                model = llm_module.LLM_MODEL.encode("utf-8")
+                return FakeResponse(b'{"models":[{"name":"' + model + b'"}]}')
+            return FakeResponse(b'{"message":{"content":"2"},"done":true}')
+
+        llm_module._ROUTE_CACHE.clear()
+        with mock.patch.object(
+            llm_module.urllib.request, "urlopen", side_effect=fake_urlopen
+        ):
+            response = llm_module.get_llm(max_tokens=16).invoke("1+1")
+
+        self.assertEqual("2", response.content)
+        self.assertTrue(captured)
+        self.assertTrue(
+            all(value == llm_module.OLLAMA_USER_AGENT for value in captured)
+        )
+
+    def test_remote_failure_falls_back_to_local_ollama(self) -> None:
+        from unittest import mock
+
+        remote = "https://unavailable-pod-11434.proxy.runpod.net/v1"
+        local = llm_module.LOCAL_OLLAMA_BASE_URL
+        original = llm_module.LLM_BASE_URL
+        requested_urls = []
+
+        class FakeResponse:
+            def __init__(self, payload: bytes):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self) -> bytes:
+                return self.payload
+
+        def fake_urlopen(request, timeout):
+            requested_urls.append(request.full_url)
+            if request.full_url.startswith("https://unavailable-pod"):
+                raise OSError("RunPod unavailable")
+            if request.full_url.endswith("/api/tags"):
+                model = llm_module.LLM_MODEL.encode("utf-8")
+                return FakeResponse(b'{"models":[{"name":"' + model + b'"}]}')
+            return FakeResponse(
+                b'{"message":{"content":"local answer"},"done":true}'
+            )
+
+        llm_module.LLM_BASE_URL = remote
+        llm_module._ROUTE_CACHE.clear()
+        try:
+            with mock.patch.object(
+                llm_module.urllib.request, "urlopen", side_effect=fake_urlopen
+            ):
+                response = llm_module.get_llm(max_tokens=16).invoke("test")
+        finally:
+            llm_module.LLM_BASE_URL = original
+            llm_module._ROUTE_CACHE.clear()
+
+        self.assertEqual("local answer", response.content)
+        self.assertEqual(local, response.response_metadata["endpoint"])
+        self.assertTrue(any(url.startswith("https://unavailable-pod") for url in requested_urls))
+        self.assertTrue(any(url.startswith(local) for url in requested_urls))
+
+
+class ProbeHeaderTests(unittest.TestCase):
+    def test_probe_sets_runpod_compatible_user_agent(self) -> None:
+        from unittest import mock
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self) -> bytes:
+                model = llm_module.LLM_MODEL.encode("utf-8")
+                return b'{"models":[{"name":"' + model + b'"}]}'
+
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["user_agent"] = request.get_header("User-agent")
+            return FakeResponse()
+
+        llm_module._ROUTE_CACHE.clear()
+        with mock.patch.object(
+            llm_module.urllib.request, "urlopen", side_effect=fake_urlopen
+        ):
+            ready, message = llm_module.probe()
+
+        self.assertTrue(ready, message)
+        self.assertEqual(llm_module.OLLAMA_USER_AGENT, captured["user_agent"])
 
 
 class StripReasoningTests(unittest.TestCase):
@@ -262,13 +379,18 @@ class ConfigConsistencyTests(unittest.TestCase):
 
 class ProbeTests(unittest.TestCase):
     def test_probe_reports_failure_without_raising(self) -> None:
-        # 닫혀 있는 포트로 향하게 해 연결 실패 경로를 확인한다.
+        # 우선·로컬 후보를 모두 닫힌 포트로 향하게 해 전체 실패 경로를 확인한다.
         original = llm_module.LLM_BASE_URL
+        original_local = llm_module.LOCAL_OLLAMA_BASE_URL
         llm_module.LLM_BASE_URL = "http://127.0.0.1:1/v1"
+        llm_module.LOCAL_OLLAMA_BASE_URL = "http://127.0.0.1:2"
+        llm_module._ROUTE_CACHE.clear()
         try:
             ok, message = llm_module.probe(timeout=1.0)
         finally:
             llm_module.LLM_BASE_URL = original
+            llm_module.LOCAL_OLLAMA_BASE_URL = original_local
+            llm_module._ROUTE_CACHE.clear()
 
         self.assertFalse(ok)
         self.assertIn("Ollama", message)
@@ -369,6 +491,46 @@ class EnvNumberTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"JEONSEON_TEST_NUM": "300"}):
             self.assertEqual(300, llm_module._env_number("JEONSEON_TEST_NUM", "1200", int))
+
+
+class EnvTextTests(unittest.TestCase):
+    def test_remote_runpod_url_is_used(self) -> None:
+        import os
+        from unittest import mock
+
+        remote = "https://example-pod-11434.proxy.runpod.net/v1"
+        with mock.patch.dict(os.environ, {"JEONSEON_TEST_URL": remote}):
+            self.assertEqual(remote, llm_module._env_text("JEONSEON_TEST_URL", "local"))
+
+    def test_blank_url_uses_local_default(self) -> None:
+        import os
+        from unittest import mock
+
+        for raw in ("", "   "):
+            with self.subTest(raw=raw):
+                with mock.patch.dict(os.environ, {"JEONSEON_TEST_URL": raw}):
+                    self.assertEqual(
+                        "http://localhost:11434/v1",
+                        llm_module._env_text(
+                            "JEONSEON_TEST_URL", "http://localhost:11434/v1"
+                        ),
+                    )
+
+    def test_runpod_v1_url_is_normalized_for_native_api(self) -> None:
+        remote = "https://example-pod-11434.proxy.runpod.net/v1"
+        original = llm_module.LLM_BASE_URL
+        llm_module.LLM_BASE_URL = remote
+        try:
+            self.assertEqual(
+                "https://example-pod-11434.proxy.runpod.net",
+                llm_module._native_base_url(),
+            )
+            self.assertEqual(
+                "https://example-pod-11434.proxy.runpod.net/api/chat",
+                llm_module._native_chat_url(),
+            )
+        finally:
+            llm_module.LLM_BASE_URL = original
 
 if __name__ == "__main__":
     unittest.main()
