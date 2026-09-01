@@ -30,6 +30,7 @@
 | [ ] | PATCH-026 | 완료 | sji21 | `feat/patch-026-law-intent-expansion` | 검색 개선 | 높음 | 생성 모델의 법령 TOP3 계약에 맞춘 법령 순위와 복합 근거 확보 개선 | 법령에만 `rrf_k=5`와 효과·절차를 구분하는 문맥 확장을 적용해 서비스 인덱스 법령 24문항의 Hit@1 79.2%를 유지하고 Hit@3 91.7%→100%, Recall@3 97.9%→100%를 재현한다. 판례·안내 설정과 순위를 바꾸지 않으며, 규칙이 관찰 42문항 중 1문항에만 발동한 한계와 새 효과·절차 질문 재검증 과제를 문서화한다. | PATCH-020, PATCH-021 | - | 2026-08-31 | - | - |
 | [x] | PATCH-028 | 완료 | yoonjihwan402 | `feat/patch-028-case-holdout-eval` | 검증·버그 수정 | 높음 | 공식 판례 안전 발행 보완과 판례 전용 홀드아웃 평가 | API 상세 응답은 `case_id` 일치와 사건번호·법원·선고일 중 2개 이상 일치해야 하며, 일부 필수 필드 누락·재수집 실패·동일성 불일치 시 기존 원천을 바꾸지 않는다. 수동 검토는 `case_id`로 연결한다. 현재 검증 판례 20건의 판례 전용 문항을 고정하고 BM25·KURE-v1·RRF를 같은 `case_id` 정답으로 비교한 보고서·공유 PDF·회귀 테스트를 제공한다. | PATCH-025, PATCH-019 | - | 2026-08-31 | 2026-08-31 | `5ded534`, `0cf9755` |
 | [ ] | PATCH-029 | 진행 중 | kimjeongjaeae | `feat/patch-029-streamlit-chatbot` | 기능 추가 | 높음 | Streamlit 전세ON 챗봇 UI, 멀티턴 후속 질문 처리와 출처 표시 개선 | 기존 `answer_question()`·Retrieval·Validation 흐름을 유지한 중앙 채팅 UI를 제공하고, 최근 정상 답변 대화를 이용해 `그럼`, `그 특약`, `아까 말한` 등의 후속 질문을 독립 질문으로 재작성해 기존 RAG 흐름에 전달한다. `대화 내용 지우기` 시 세션 대화 맥락도 초기화하고, 답변 출처는 내부 `law`·`case`·`guide` 표기 대신 `관련 법령`·`관련 판례`·`관련 기관 안내`로 구분해 표시한다. OCR·문서 세션 기억은 이번 패치에서 연결하지 않으며 `src/retrieval/*`·`src/generation/models.py`·기존 검색 건수 설정은 변경하지 않는다. Streamlit·멀티턴 회귀 테스트를 통과해야 한다. | PATCH-024, PATCH-026, PATCH-028 | - | 2026-08-31 | - | - |
+| [ ] | PATCH-035 | 완료 | BellaHez | `feat/patch-035-ollama-local-fallback` | 기능 변경 | 높음 | RunPod Ollama 우선 호출과 로컬 Ollama 자동 전환 | `JEONSEON_LLM_BASE_URL`이 설정되면 RunPod Ollama를 우선 사용하고 연결 실패·모델 부재·생성 호출 실패 시 같은 모델이 설치된 `http://localhost:11434`로 자동 전환한다. 원격 URL을 설정하지 않으면 기존처럼 로컬 Ollama만 사용하며, RunPod 프록시 호환 요청 헤더·상태 진단·사용 중인 엔드포인트 안내와 회귀 테스트·README 설명을 함께 제공한다. | PATCH-021, PATCH-032 | - | 2026-09-01 | - | - |
 
 ## 현재 작업 경계
 
@@ -44,6 +45,7 @@
 - 현재 완료 패치: `PATCH-025` (PATCH-022 리뷰 보완: 공식 API 검증·안전 변환·DB 이관, PR #12)
 - 현재 완료 패치: `PATCH-028` (공식 판례 안전 발행 보완·판례 전용 홀드아웃 평가)
 - 현재 진행 패치: `PATCH-029` (Streamlit 챗봇 UI·멀티턴 후속 질문·출처 표시 개선)
+- 현재 검증 완료·커밋 대기 패치: `PATCH-035` (RunPod Ollama 우선 호출·로컬 Ollama 자동 전환)
 - 생성 파트 검증: 전체 테스트 271개 통과(스킵 2) — 생성 신규 82개 포함(main 병합 후, 공식 안내 대응). `src/retrieval/*`·`.env.example`·`README.md` 는 수정하지 않았다(`requirements.txt` 는 직접 import 하는 `langchain-core` 누락과 `langchain-openai` 버전 미고정을 팀 합의로 반영)
 - 생성 파트는 근거를 법령 3건·판례 2건과 공식 안내 최대 2건만 쓴다(`docs/retrieval-handoff.md` 의 건수 조절 안내). 5+5 로는 8B 모델이 초점을 잃어 오답을 냈고, 3+2 로 줄이자 같은 문항이 정답으로 바뀐 측정 결과에 따른 것이다. 더 큰 모델로 바꾸면 재측정해야 한다
 - `PATCH-015`는 생성 담당이 완료해 병합됨(PR #2)
