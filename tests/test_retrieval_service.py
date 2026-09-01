@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from src.retrieval.retriever import matches
 from src.retrieval.terms import expand, expand_law
@@ -26,6 +28,7 @@ from src.retrieval.service import (
     route_law_corpus,
     split_by_type,
 )
+from src.retrieval import service as service_module
 
 
 def law_chunk(chunk_id: str, text: str, no: str, title: str = "주택임대차보호법",
@@ -528,3 +531,20 @@ class GuidePresentationTests(unittest.TestCase):
     def test_interpretations_are_not_lumped_in_with_guides(self):
         """법령해석은 조문의 뜻을 정하는 자료라 실무 안내와 무게가 다르다."""
         self.assertNotIn("interp", GUIDE.doc_types)
+
+
+class IndexChunkFallbackTests(unittest.TestCase):
+    def test_sample_chunks_are_used_when_generated_chunks_are_missing(self):
+        sample = Path("/tmp/chunks_expanded.jsonl")
+        expected = [law_chunk("law-12", "미등기 전세에도 이 법을 준용합니다.", "제12조")]
+
+        with (
+            patch.object(service_module, "SAMPLE_CHUNKS", sample),
+            patch.object(service_module, "_load_all", return_value=[]),
+            patch.object(service_module, "load_chunks", return_value=expected) as load,
+            patch.object(Path, "exists", return_value=True),
+        ):
+            actual = service_module._load_index_chunks((Path("data/chunks/chunks.jsonl"),))
+
+        self.assertEqual(expected, actual)
+        load.assert_called_once_with(sample)

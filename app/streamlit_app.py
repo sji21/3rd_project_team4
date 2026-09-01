@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 
@@ -688,8 +687,11 @@ def render_live_elapsed_timer() -> None:
     갱신해 사용자가 처리 진행 시간을 계속 볼 수 있게 한다.
     """
 
-    components.html(
+    st.iframe(
         """
+        <style>
+          html, body { margin: 0; overflow: hidden; }
+        </style>
         <div style="
             display:flex;
             align-items:center;
@@ -716,7 +718,6 @@ def render_live_elapsed_timer() -> None:
         </script>
         """,
         height=42,
-        scrolling=False,
     )
 
 

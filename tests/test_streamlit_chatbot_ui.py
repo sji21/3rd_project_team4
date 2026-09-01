@@ -62,7 +62,8 @@ def test_chat_messages_and_statuses_have_distinct_styles():
 
 
 def test_processing_state_has_live_elapsed_timer_without_internal_exception_type():
-    assert "streamlit.components.v1 as components" in TEXT
+    assert "streamlit.components.v1 as components" not in TEXT
+    assert "st.iframe(" in TEXT
     assert "def render_live_elapsed_timer()" in TEXT
     assert 'id="jeonse-elapsed"' in TEXT
     assert "setInterval(updateElapsed, 100)" in TEXT
