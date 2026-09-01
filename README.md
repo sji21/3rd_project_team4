@@ -49,6 +49,11 @@ jeonse-on/
 
 ## 실행
 
+최초 실행에서는 Git에 포함되지 않는 법령·판례·기관 안내 청크와 Chroma 인덱스를 먼저
+준비해야 한다. `docs/retrieval-handoff.md` 3절의 법령 → 판례 → 안내 적재·색인 절차를
+완료한 뒤 Streamlit을 실행한다. 아래 「법령 적재와 Chroma 인덱싱」 절에는 각 데이터
+종류를 다시 넣을 때의 동기화 범위와 주의사항을 설명한다.
+
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # 키 값 채우기
@@ -199,6 +204,11 @@ OCR ExtractionResult → SessionDocumentChunk → SessionDocumentRetriever
 상태에 저장하지 않고 node closure 안에서만 쓰므로, 개발 환경에서 tracing 을 켜도
 계약서·등기 원문이 외부로 전송되지 않는다.
 
+LangSmith는 선택 기능이며 기본값은 비활성화다. 일반 질문의 Graph 실행 경로를 추적할
+때만 로컬 `.env`에 `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를
+설정한다. 개인정보가 포함된 실제 사용자 질문을 추적할 때는 별도의 운영·보관 정책을
+먼저 정해야 한다.
+
 ### LLM 런타임
 
 | 설정 | 값 |
@@ -206,12 +216,13 @@ OCR ExtractionResult → SessionDocumentChunk → SessionDocumentRetriever
 | 모델 | `qwen3:8b-q4_K_M` |
 | API | Ollama native `/api/chat` |
 | Temperature | `0.0` |
-| 본답변 max tokens | `256` |
+| 일반 본답변 max tokens | `256` |
+| 문서-only 본답변 max tokens | 최소 `384` |
 | 보조 판정 max tokens | `160` |
 | Context | `4096` |
 | Keep alive | `30m` |
 | Thinking | `false` |
-| 1순위 / 대체 | RunPod Ollama / 로컬 Ollama |
+| 실행 위치 | 기본 Local Ollama, 원격 URL 설정 시 RunPod 우선 후 Local 대체 |
 
 OpenAI 호환 `/v1` 경로에서는 Qwen3 의 `think=false` 가 실제 요청에 안정적으로 적용되지
 않아, 내부 reasoning 이 출력 토큰을 먼저 소비하고 최종 `content` 가 비거나 답변이 중간에
@@ -479,6 +490,24 @@ python -m src.ingestion.validate_chunks data/chunks/chunks.jsonl --eval-set data
 pytest -q
 ```
 
+### 최종 검색 평가 요약
+
+제출 환경의 최종 검색 평가는 법령과 판례를 서로 다른 정답 단위·운영 반환 건수로
+측정했다. 서로 증명력이 다른 점수를 합친 "전체 정확도"는 만들지 않는다.
+
+| 구분 | 평가 문항 | 운영 기준 | 결과 |
+| --- | ---: | ---: | ---: |
+| 법령 Dev | 24 | TOP3 | 24/24 (100.0%) |
+| 법령 기존 Holdout | 18 | TOP3 | 17/18 (94.4%) |
+| 판례 Dev | 13 | TOP2 | 12/13 (92.3%) |
+| 판례 대체 Holdout | 8 | TOP2 | 7/8 (87.5%) |
+
+판례 결과는 현재 검토·재현 가능한 26건 코퍼스 기준이다. 대체 Holdout 8문항은
+표본이 작아 일반화 성능을 확정하는 근거로 사용하지 않는다. 기관 안내는 질문 주제에
+따른 0~2건 조건부 반환과 법령·판례로부터의 격리를 기능·회귀 테스트로 확인했지만,
+독립 정량 평가셋이 충분하지 않아 별도 정확도 수치를 산출하지 않았고 위 점수에도
+합산하지 않았다.
+
 ## 기획서 PDF 재생성
 
 ```bash
@@ -563,12 +592,19 @@ python -m src.retrieval.index --chunks data/chunks/chunks.jsonl
 같은 컬렉션에 두고 각각 따로 재색인하는 운영을 전제하기 때문입니다.
 
 ```bash
-# 판례 26건 → 공통 SQLite → PATCH-018 표준 청크
+# 제출·시연·평가에 사용한 판례 26건 → 공통 SQLite → PATCH-018 표준 청크
 python scripts/load_case_only_demo_corpus.py
 
 # 판례 청크만 통합 Chroma에 적재. 법령 벡터는 그대로 남습니다.
 python -m src.retrieval.index --chunks data/chunks/cases.jsonl
 ```
+
+현재 판례 검색과 최종 평가는 검토 및 재현 가능한 위 26건을 기준으로 수행했다. 추가로
+수집 가능한 판례는 현재 평가에 포함하지 않았으며, 출처·사건정보·판결요지와 주택임대차
+도메인 적합성을 확인한 뒤 코퍼스에 추가할 수 있다. 판례 코퍼스가 바뀌면 기존 결과를
+그대로 적용하지 않고 Dev·Holdout 회귀 평가를 다시 수행한다. 과거 문서의 207건은 검토 전
+스테이징 기준선이며 현재 적재 또는 검증 완료 건수를 의미하지 않는다. 공식 판례 원천의
+검증·재수집·표준 적재 절차는 `docs/case-data-handoff.md`를 따른다.
 
 컬렉션 전체를 기준으로 잡으면 판례만 다시 넣었을 때 법령이 전부 "이번 입력에 없는
 문서"가 되어 사라집니다. 통합 파일로 한 번에 넣는 방식도 그대로 동작합니다 — 입력에
