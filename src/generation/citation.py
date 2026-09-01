@@ -65,6 +65,11 @@ _CASE_MENTION_RE = re.compile(
     r"(?P<number>\d{4}[가-힣]{1,4}\d+)"
 )
 
+_COURT_NAME_RE = re.compile(
+    r"^(?:대법원|헌법재판소|"
+    r"[가-힣]+(?:지방법원|고등법원|가정법원|행정법원))$"
+)
+
 _AGENCY_RE = re.compile(
     r"HUG|NTS|"
     r"[가-힣A-Za-z0-9·]{2,30}(?:부|청|공사|공단|원)",
@@ -267,6 +272,12 @@ def _guide_identity(agency: str) -> str:
     return target
 
 
+def _is_court_name(name: str) -> bool:
+    """법원명은 안내 기관이 아니라 판례 인용의 일부다."""
+
+    return bool(_COURT_NAME_RE.fullmatch((name or "").strip()))
+
+
 def _build_guide_index(evidences: tuple[Evidence, ...]) -> dict[str, set[str]]:
     index: dict[str, set[str]] = {}
 
@@ -354,6 +365,11 @@ def extract_citation_mentions(
 
     for match in _GUIDE_MENTION_RE.finditer(raw_text or ""):
         agency = match.group("agency")
+        # "대법원 판례에 따르면"의 대법원을 안내 기관으로 해석하면, 사건번호가
+        # 있는 정상 판례 인용에도 지원되지 않는 guide 출처 오류가 함께 생긴다.
+        # 법원명은 case 인용에서만 다루며, 사건번호 없이는 검증 가능한 출처가 아니다.
+        if _is_court_name(agency):
+            continue
         identity = _guide_identity(agency)
         seen_key = ("guide", identity)
         if seen_key in seen:
@@ -382,6 +398,7 @@ def audit_citations(answer: Answer) -> CitationAudit:
     missing_required = (
         answer.status == "answered"
         and bool(answer.raw_text.strip())
+        and answer.requires_official_citation
         and not mentions
     )
     return CitationAudit(mentions=mentions, missing_required=missing_required)

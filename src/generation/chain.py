@@ -42,6 +42,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda
 
 from src.document_check.privacy import mask_sensitive_text
+from src.document_check.session_retrieval import SessionDocumentEvidence
 from src.generation import llm as llm_module
 from src.generation import prompt as prompt_module
 from src.generation.abstention import (
@@ -53,6 +54,7 @@ from src.generation.llm import clean_output, get_llm
 from src.generation.models import Answer
 from src.generation.evidence_routing import retrieve_staged
 from src.generation.validation import (
+    DOCUMENT_SEMANTIC_JUDGE_SYSTEM,
     SEMANTIC_JUDGE_SYSTEM,
     SemanticJudgement,
     audit_answer,
@@ -188,6 +190,18 @@ def build_qa_chain(llm=None) -> Runnable:
     )
 
 
+def build_document_qa_chain(llm=None) -> Runnable:
+    """업로드 문서만 사용하는 질문을 위한 짧은 생성 체인."""
+
+    llm = llm if llm is not None else get_llm()
+    return (
+        prompt_module.build_document_qa_prompt()
+        | llm
+        | StrOutputParser()
+        | RunnableLambda(clean_output)
+    )
+
+
 # ── 질문 하나 처리 ─────────────────────────────────────────────
 
 _PROMPT_INJECTION_NOTICE = (
@@ -210,6 +224,63 @@ _VALIDATION_FAILED_TEXT = (
     "질문을 조금 더 구체적으로 바꿔 다시 물어봐 주세요."
 )
 
+_NO_DOCUMENT_AND_OFFICIAL_EVIDENCE_TEXT = (
+    "업로드 문서에서 질문과 관련된 내용을 찾지 못했고, 공식 자료에서도 답변 근거를 찾지 못했습니다. "
+    "문서명·항목명·쪽수를 포함해 다시 질문해 주세요."
+)
+
+_DOCUMENT_FACT_TERMS = (
+    "업로드문서",
+    "계약서",
+    "등기부",
+    "등기사항",
+    "특약",
+    "보증금",
+    "전세금",
+    "월세",
+    "차임",
+    "관리비",
+    "계약기간",
+    "계약일",
+    "잔금",
+    "계약금",
+    "중도금",
+    "임대인",
+    "임차인",
+    "소유자",
+    "소재지",
+    "주소",
+    "채권최고액",
+    "근저당",
+    "가압류",
+    "압류",
+    "신탁",
+    "임차권",
+    "발급일",
+    "열람일",
+)
+
+_DOCUMENT_LEGAL_INTERPRETATION_TERMS = (
+    "효력",
+    "법적",
+    "법률",
+    "유효",
+    "대항력",
+    "우선변제",
+    "순위",
+    "보호받",
+)
+
+
+def _is_document_only_question(question: str) -> bool:
+    """업로드 문서 요약만 필요하고 공식 법률 검색은 불필요한 질문인지 판별한다."""
+
+    normalized = "".join((question or "").split())
+    return (
+        any(term in normalized for term in _DOCUMENT_FACT_TERMS)
+        and not any(term in normalized for term in _DOCUMENT_LEGAL_INTERPRETATION_TERMS)
+    )
+
 
 def _safe_question(question: str) -> str:
     """LLM·검색·로그에 넘기기 전에 비밀정보와 개인정보를 가린다."""
@@ -220,6 +291,12 @@ def _safe_question(question: str) -> str:
 
 def _invoke_auxiliary_llm(llm, system_prompt: str, user_prompt: str) -> str:
     """분류·재작성·사후검증용 Qwen 호출을 한 형태로 묶는다."""
+
+    # Qwen3는 짧은 PASS/FAIL 판정에서도 사고 과정을 먼저 생성할 수 있다.
+    # native API의 think=false를 지원하지 않거나 무시하는 서버도 있으므로
+    # main 답변과 동일하게 사용자 메시지 끝에도 /no_think를 명시한다.
+    if llm_module.THINK_OFF:
+        user_prompt = f"{user_prompt.rstrip()}\n\n/no_think"
 
     chain = (
         ChatPromptTemplate.from_messages(
@@ -278,19 +355,27 @@ def _semantic_judge(llm):
         question: str,
         answer_text: str,
         evidences: tuple[Evidence, ...],
+        document_evidences: tuple[SessionDocumentEvidence, ...] = (),
     ) -> SemanticJudgement:
-        # build_semantic_judge_prompt()는 Answer.evidences만 읽으므로, 검증 prompt
-        # 조립용 임시 Answer에서는 evidences를 laws 슬롯에 모아도 의미가 바뀌지 않는다.
+        # 공식 근거는 laws 슬롯에만 넣고 OCR 근거는 별도 필드로 둔다. 두 출처를
+        # 검증 프롬프트에서도 섞지 않아야 법적 근거로 오인하지 않는다.
         probe = Answer(
             question=question,
             status="answered",
             text=answer_text,
             raw_text=answer_text,
             laws=tuple(evidences),
+            document_evidences=document_evidences,
+            requires_official_citation=bool(evidences),
+        )
+        judge_system = (
+            DOCUMENT_SEMANTIC_JUDGE_SYSTEM
+            if document_evidences and not evidences
+            else SEMANTIC_JUDGE_SYSTEM
         )
         output = _invoke_auxiliary_llm(
             llm,
-            SEMANTIC_JUDGE_SYSTEM,
+            judge_system,
             build_semantic_judge_prompt(probe),
         )
         lines = [line.strip() for line in output.splitlines() if line.strip()]
@@ -328,24 +413,20 @@ def _abstained_after_validation(
     question: str,
     result: RetrievalResult,
     report,
+    document_evidences: tuple[SessionDocumentEvidence, ...] = (),
     *,
     validation_mode: str = "deterministic",
 ) -> Answer:
-    # 실패한 생성 원문 전체는 사용자-facing Answer나 로그에 넣지 않는다.
-    # 원인 확인에 필요한 검증 대상 조각(issue.text)만 secret redaction 후 남긴다.
+    # OCR 문구와 생성 원문은 로그에 남기지 않는다. 운영 진단에는 오류 분류와
+    # 공식 청크 식별자만 남긴다.
     issue_summary = [
-        {
-            "kind": issue.kind,
-            "text": redact_secrets(issue.text),
-            "detail": issue.detail,
-            "evidence_chunk_ids": issue.evidence_chunk_ids,
-        }
+        {"kind": issue.kind, "evidence_chunk_ids": issue.evidence_chunk_ids}
         for issue in report.issues
     ]
     logger.warning(
-        "생성 답변 검증 실패: question=%r issues=%s",
-        question,
+        "생성 답변 검증 실패: issues=%s document_evidence_count=%d",
         issue_summary,
+        len(document_evidences),
     )
     return Answer(
         question=question,
@@ -354,6 +435,7 @@ def _abstained_after_validation(
         laws=tuple(result.laws),
         cases=tuple(result.cases),
         guides=tuple(result.guides),
+        document_evidences=document_evidences,
         validation_mode=validation_mode,
     )
 
@@ -367,6 +449,8 @@ def answer_question(
     k_guide: int = DEFAULT_K_GUIDE,
     refuse_check: Callable[[str], bool] | None = None,
     auxiliary_llm=None,
+    document_evidences: tuple[SessionDocumentEvidence, ...] = (),
+    document_search_attempted: bool = False,
 ) -> Answer:
     """질문 하나를 사전 검사부터 사후 검증까지 처리한다.
 
@@ -437,38 +521,59 @@ def answer_question(
 
     # 3) 단계형 Retrieval. 법령·기관 안내를 먼저 찾고, 판례를 직접 요청했거나
     # 질문 유형에 맞는 1차 근거가 없을 때만 판례를 추가한다.
-    service = service if service is not None else get_default_service()
-    routed = retrieve_staged(
-        service,
-        safe_question,
-        k_law=k_law,
-        k_case=k_case,
-        k_guide=k_guide,
-    )
-    result: RetrievalResult = routed.result
-    logger.info(
-        "근거 라우팅: question_type=%s primary_sufficient=%s cases_added=%s",
-        routed.route.question_type,
-        routed.route.primary_sufficient,
-        routed.route.cases_added,
-    )
+    # 문서 전용 질문은 상한이 모두 0으로 내려오므로 공식 검색을 아예 건너뛴다.
+    if k_law <= 0 and k_case <= 0 and k_guide <= 0:
+        result: RetrievalResult = RetrievalResult(question=safe_question)
+    else:
+        service = service if service is not None else get_default_service()
+        routed = retrieve_staged(
+            service,
+            safe_question,
+            k_law=k_law,
+            k_case=k_case,
+            k_guide=k_guide,
+        )
+        result = routed.result
+        logger.info(
+            "근거 라우팅: question_type=%s primary_sufficient=%s cases_added=%s",
+            routed.route.question_type,
+            routed.route.primary_sufficient,
+            routed.route.cases_added,
+        )
 
-    if result.is_empty():
+    if result.is_empty() and not document_evidences:
+        no_evidence_text = (
+            _NO_DOCUMENT_AND_OFFICIAL_EVIDENCE_TEXT
+            if document_search_attempted
+            else prompt_module.NO_EVIDENCE_TEXT
+        )
         return Answer(
             question=safe_question,
             status="abstained",
-            text=f"{prompt_module.NO_EVIDENCE_TEXT}\n\n{prompt_module.DISCLAIMER}",
+            text=f"{no_evidence_text}\n\n{prompt_module.DISCLAIMER}",
         )
 
     # 4) main Qwen answer.
     # 네트워크/서버 오류 때 OpenAI client의 자동 재시도로 180초 timeout이
     # 여러 번 반복되지 않도록 runtime 기본 생성에서는 retry를 끈다.
-    main_llm = llm if llm is not None else get_llm(max_retries=0)
-    chain = build_qa_chain(main_llm)
+    document_only = bool(document_evidences) and k_law <= 0 and k_case <= 0 and k_guide <= 0
+    main_llm = (
+        llm
+        if llm is not None
+        else get_llm(
+            max_retries=0,
+            **(
+                {"max_tokens": max(384, llm_module.LLM_MAX_TOKENS)}
+                if document_only
+                else {}
+            ),
+        )
+    )
+    chain = build_document_qa_chain(main_llm) if document_only else build_qa_chain(main_llm)
     try:
         raw_text = chain.invoke(
             {
-                "context": prompt_module.format_context(result),
+                "context": prompt_module.format_context(result, document_evidences),
                 "question": safe_question,
             }
         )
@@ -481,6 +586,7 @@ def answer_question(
             laws=tuple(result.laws),
             cases=tuple(result.cases),
             guides=tuple(result.guides),
+            document_evidences=document_evidences,
         )
 
     if not raw_text.strip():
@@ -497,6 +603,7 @@ def answer_question(
             laws=tuple(result.laws),
             cases=tuple(result.cases),
             guides=tuple(result.guides),
+            document_evidences=document_evidences,
         )
 
     evidences = tuple(result.laws + result.cases + result.guides)
@@ -515,13 +622,17 @@ def answer_question(
         laws=tuple(result.laws),
         cases=tuple(result.cases),
         guides=tuple(result.guides),
+        document_evidences=document_evidences,
+        requires_official_citation=not result.is_empty(),
     )
 
     # 6) main Qwen이 만든 최종 본문을 deterministic citation/validation으로
     # 먼저 검사한다. 명확한 오류가 있으면 semantic judge까지 호출하지 않는다.
     report = audit_answer(candidate)
     if not report.is_valid:
-        return _abstained_after_validation(safe_question, result, report)
+        return _abstained_after_validation(
+            safe_question, result, report, document_evidences
+        )
 
     # 단일 법령의 단순 설명은 결정론적 검사로 끝낸다. 판례·기관 안내·복수 출처,
     # 숫자·시점·조건·예외처럼 의미 변형 위험이 있는 답변만 Qwen이 한 번 더 본다.
@@ -531,14 +642,40 @@ def answer_question(
 
     report = audit_answer(
         candidate,
-        semantic_judge=_semantic_judge(get_aux_llm()),
+        semantic_judge=lambda question, text, evidences: _semantic_judge(
+            get_aux_llm()
+        )(question, text, evidences, document_evidences),
     )
     if not report.is_valid:
         return _abstained_after_validation(
             safe_question,
             result,
             report,
+            document_evidences,
             validation_mode="semantic",
         )
 
     return replace(candidate, validation_mode="semantic")
+
+
+def answer_document_question(
+    question: str,
+    document_evidences: tuple[SessionDocumentEvidence, ...],
+    **kwargs,
+) -> Answer:
+    """세션 OCR 근거와 기존 공식 검색 결과를 함께 생성 경계에 전달한다."""
+
+    # 문서에 적힌 보증금·특약·당사자 등을 그대로 묻는 질문에 무관한 법령 검색을
+    # 섞으면 작은 모델이 억지로 법령을 인용하고 semantic judge가 답을 거절한다.
+    # 해석·위험 분석 질문은 기존 공식 검색을 유지한다.
+    if document_evidences and _is_document_only_question(question):
+        kwargs.setdefault("k_law", 0)
+        kwargs.setdefault("k_case", 0)
+        kwargs.setdefault("k_guide", 0)
+
+    return answer_question(
+        question,
+        document_evidences=document_evidences,
+        document_search_attempted=True,
+        **kwargs,
+    )

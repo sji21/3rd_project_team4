@@ -31,11 +31,13 @@ def install_ui_test_stubs(monkeypatch) -> None:
     chain_module = ModuleType("src.generation.chain")
     chain_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
     chain_module.get_default_service = lambda: object()
+    chain_module.answer_document_question = lambda *_args, **_kwargs: FakeAnswer()
 
     # Streamlit의 Generation 진입점이 LangGraph로 바뀌었으므로
     # UI 테스트에서도 해당 import 경계만 같은 FakeAnswer로 대체한다.
     graph_module = ModuleType("src.generation.graph")
     graph_module.answer_question = lambda *_args, **_kwargs: FakeAnswer()
+    graph_module.answer_document_question = lambda *_args, **_kwargs: FakeAnswer()
 
     conversation_module = ModuleType("src.generation.conversation")
 
@@ -73,10 +75,8 @@ def test_initial_screen_is_chat_first_without_quick_questions(monkeypatch) -> No
     assert not app.exception
     assert len(app.chat_input) == 1
     assert app.chat_input[0].placeholder.startswith("예: 전입신고")
-    assert app.sidebar.button[0].label == "🗑️ 대화 내용 지우기"
-
-    button_labels = [button.label for button in app.button]
-    assert button_labels == ["🗑️ 대화 내용 지우기"]
+    assert len(app.sidebar.button) == 0
+    assert "🗑️ 대화 내용 지우기" not in [button.label for button in app.button]
 
 
 def test_chat_input_runs_the_existing_answer_chain(monkeypatch) -> None:
