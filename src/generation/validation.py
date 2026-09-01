@@ -84,7 +84,26 @@ SEMANTIC_JUDGE_SYSTEM = """당신은 전세ON의 답변 검증기입니다.
 역할의 자료가 함께 검색된 경우, 질문이 묻는 한쪽을 정확히 답했다는 이유만으로
 다른 쪽을 설명하지 않았다고 FAIL로 판정하지 마십시오.
 
+`[업로드 문서]`는 사용자가 제공한 계약서·등기사항증명서의 OCR 근거입니다.
+- 보증금, 특약, 당사자, 등기 항목처럼 문서에 적힌 사실을 묻는 질문은 업로드 문서
+  근거만으로 답해도 됩니다. 공식 법령을 인용하지 않았다는 이유로 FAIL하지 마십시오.
+- 문서 분석 요청에서 발견된 권리나 문구와 추가 확인사항을 설명하는 것은 허용됩니다.
+  계약이 안전하다거나 위험하다고 최종 단정한 경우에만 FAIL하십시오.
+- 질문과 무관한 공식 검색 결과를 답변에서 사용하지 않은 것은 실패 사유가 아닙니다.
+
 출력은 첫 줄에 PASS 또는 FAIL만 쓰십시오. 이유 설명이나 다른 문장은 쓰지 마십시오."""
+
+
+DOCUMENT_SEMANTIC_JUDGE_SYSTEM = """당신은 업로드 문서 답변 검증기입니다.
+
+질문, 업로드 문서 OCR 근거, 생성 답변을 비교하십시오.
+- 답변의 금액·날짜·당사자·특약·등기 항목이 OCR 근거에 있고 질문에 답하면 PASS입니다.
+- OCR 문구를 의미가 같게 짧게 정리한 것은 허용합니다.
+- 등기에서 확인된 근저당권·압류·가압류·신탁·임차권 등을 주의해서 확인하라고 설명한 것은 허용합니다.
+- 문서에 없는 법령·판례·금액·사실을 추가하거나 계약의 안전·위험을 최종 판정하면 FAIL입니다.
+- 질문에서 요청한 핵심 항목을 빠뜨리면 FAIL입니다.
+
+출력은 PASS 또는 FAIL 한 단어만 쓰십시오."""
 
 
 def build_semantic_judge_prompt(answer: Answer) -> str:
@@ -94,6 +113,11 @@ def build_semantic_judge_prompt(answer: Answer) -> str:
     for evidence in answer.evidences:
         evidence_blocks.append(
             f"[{evidence.doc_type}] {evidence.citation}\n{evidence.text}"
+        )
+    for evidence in answer.document_evidences:
+        evidence_blocks.append(
+            "[업로드 문서] "
+            f"{evidence.filename} {evidence.page_number}쪽\n{evidence.text}"
         )
     context = "\n\n".join(evidence_blocks) or "검색 근거 없음"
     return (
@@ -190,22 +214,31 @@ class _ValueMention:
     end: int
 
 
+# 금액 한 토막의 길이를 제한한다. 등기 문서관리번호처럼 수십 자리인 숫자열을
+# 금액 후보로 끝없이 분할해 보지 않게 하면서, 18자리 원 단위와 소수 표기는 받는다.
+_MONEY_NUMBER = r"(?:\d{1,3}(?:,\d{3}){1,5}|\d{1,18})(?:\.\d{1,4})?"
 _MONEY_RE = re.compile(
-    r"(?P<value>"
-    r"(?:\d[\d,]*(?:\.\d+)?\s*(?:억|천|백|십|만)?\s*)+원"
-    r")"
+    rf"(?<![\d,])(?P<value>(?=\d)"
+    rf"(?:{_MONEY_NUMBER}\s*억\s*)?"
+    rf"(?:{_MONEY_NUMBER}\s*천\s*)?"
+    rf"(?:{_MONEY_NUMBER}\s*백\s*)?"
+    rf"(?:{_MONEY_NUMBER}\s*십\s*)?"
+    rf"(?:{_MONEY_NUMBER}\s*만\s*)?"
+    rf"(?:{_MONEY_NUMBER}\s*)?원)"
 )
 
 _PERCENT_RE = re.compile(
-    r"(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>%|퍼센트|할)"
+    r"(?<![\d.])(?P<number>\d{1,6}(?:\.\d{1,4})?)\s*"
+    r"(?P<unit>%|퍼센트|할)"
 )
 
 _PERIOD_RE = re.compile(
-    r"(?P<number>\d+)\s*(?P<unit>일|개월|년)"
+    r"(?<!\d)(?P<number>\d{1,6})\s*(?P<unit>일|개월|년)"
 )
 
 _FRACTION_RE = re.compile(
-    r"(?P<denominator>\d+)\s*분의\s*(?P<numerator>\d+)"
+    r"(?<!\d)(?P<denominator>\d{1,6})\s*분의\s*"
+    r"(?P<numerator>\d{1,6})(?!\d)"
 )
 
 _DATE_RE = re.compile(
@@ -454,7 +487,10 @@ def _looks_like_source_quote(text: str, start: int, end: int) -> bool:
 
 
 def _quote_issues(answer: Answer) -> list[ValidationIssue]:
-    evidence_texts = tuple(_compact(evidence.text) for evidence in answer.evidences)
+    evidence_texts = tuple(
+        _compact(evidence.text)
+        for evidence in answer.evidences + answer.document_evidences
+    )
     issues = []
 
     for match in _QUOTE_RE.finditer(answer.raw_text):
@@ -479,6 +515,11 @@ def _quote_issues(answer: Answer) -> list[ValidationIssue]:
 
 def _value_issues(answer: Answer) -> list[ValidationIssue]:
     supported = _evidence_values(answer.evidences)
+    supported.update(
+        (value.kind, value.canonical)
+        for evidence in answer.document_evidences
+        for value in _extract_values(evidence.text)
+    )
     issues = []
 
     for value in _extract_values(answer.raw_text):

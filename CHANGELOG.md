@@ -2,6 +2,10 @@
 
 ## 2026-09-01
 
+### Added
+
+- PATCH-036 adds multi-file PDF/JPG/PNG chat attachments with session-only OCR page retrieval. Document and official evidence now pass through the same LangGraph generation and validation policy, remain separate in the answer sources, and document queries disable LangSmith tracing. (commit: `b48637f`)
+
 ### Changed
 
 - PATCH-035 prefers the configured RunPod Ollama endpoint and automatically falls back to a compatible local Ollama instance when the remote endpoint is unavailable, lacks the configured model, or fails during generation. It also documents endpoint configuration and reports the active endpoint in diagnostics. (commit: `8debb71`)

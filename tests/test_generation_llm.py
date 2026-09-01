@@ -206,6 +206,11 @@ class StripReasoningTests(unittest.TestCase):
 class TrimToLastSentenceTests(unittest.TestCase):
     """토큰 상한에 걸리면 문장 한가운데가 잘린다. 그대로 내보내면 고장처럼 보인다."""
 
+    def test_keeps_complete_document_source_in_brackets(self) -> None:
+        text = "보증금은 100,000,000원입니다. [오피스텔임대차계약서.pdf 2쪽]"
+
+        self.assertEqual(text, llm_module.trim_to_last_sentence(text))
+
     def test_drops_incomplete_tail(self) -> None:
         text = "첫 문장입니다. 두 번째도 완성된 문장입니다. 세 번째는 여기서 끊기"
 

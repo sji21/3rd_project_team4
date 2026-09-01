@@ -143,6 +143,8 @@ DATE_PATTERNS = (
     re.compile(r"(20\d{2})(\d{2})(\d{2})"),
 )
 
+_OCR_INTERNAL_SPACE_RE = re.compile(r"(?<=[가-힣0-9])\s+(?=[가-힣0-9])")
+
 
 def _flexible_pattern(keyword: str) -> re.Pattern[str]:
     return re.compile(r"\s*".join(re.escape(character) for character in keyword))
@@ -184,7 +186,14 @@ def _find_issue_date(pages: tuple[PageExtraction, ...]) -> tuple[date, int] | No
     candidates: list[tuple[date, int]] = []
     for page in pages:
         lines = re.split(r"[\r\n]+", page.text)
-        issue_lines = [line for line in lines if re.search(r"발급\s*일|열람\s*일시", line)]
+        # Tesseract가 한글과 날짜 숫자 사이에 넣은 공백만 판독용 사본에서 제거한다.
+        # 원본 PageExtraction 텍스트와 화면에 표시할 근거는 변경하지 않는다.
+        normalized_lines = [_OCR_INTERNAL_SPACE_RE.sub("", line) for line in lines]
+        issue_lines = [
+            line
+            for line in normalized_lines
+            if re.search(r"발급일|열람일시", line)
+        ]
         for line in issue_lines:
             for pattern in DATE_PATTERNS:
                 matches = pattern.finditer(line)

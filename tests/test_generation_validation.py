@@ -3,6 +3,7 @@ import unittest
 from src.generation.models import Answer
 from src.generation.validation import (
     SemanticJudgement,
+    _extract_values,
     audit_answer,
     ground_answer_conditions,
     requires_semantic_validation,
@@ -36,6 +37,11 @@ def issue_kinds(answer: Answer, semantic_judge=None) -> set[str]:
 
 
 class ValidationTests(unittest.TestCase):
+    def test_long_registry_identifier_is_not_treated_as_money(self):
+        text = "문서관리번호 23660070500023666102000001000202"
+
+        self.assertEqual((), _extract_values(text))
+
     def test_accepts_grounded_period(self):
         ev = evidence(
             "law-6-2",

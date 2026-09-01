@@ -26,10 +26,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 import logging
+from contextlib import nullcontext
 from typing import Any, Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langsmith import tracing_context
 
+from src.document_check.session_retrieval import SessionDocumentEvidence
 from src.generation import chain as chain_module
 from src.generation.evidence_routing import EvidenceRoute, retrieve_staged
 from src.generation.models import Answer
@@ -88,6 +91,8 @@ def build_generation_graph(
     k_guide: int = chain_module.DEFAULT_K_GUIDE,
     refuse_check: Callable[[str], bool] | None = None,
     auxiliary_llm=None,
+    document_evidences: tuple[SessionDocumentEvidence, ...] = (),
+    document_search_attempted: bool = False,
 ):
     """기존 Generation 정책을 그대로 사용하는 실행 Graph를 만든다.
 
@@ -253,32 +258,35 @@ def build_generation_graph(
 
         # 안전성/범위 검사를 통과한 뒤에만 검색 서비스를 만든다.
         # 기존 chain의 Retrieval-before/after 경계를 그대로 유지한다.
-        runtime_service = (
-            service if service is not None
-            else chain_module.get_default_service()
-        )
-
-        routed = retrieve_staged(
-            runtime_service,
-            question,
-            k_law=k_law,
-            k_case=k_case,
-            k_guide=k_guide,
-        )
-        result = routed.result
-        logger.info(
-            "근거 라우팅: question_type=%s primary_sufficient=%s cases_added=%s",
-            routed.route.question_type,
-            routed.route.primary_sufficient,
-            routed.route.cases_added,
-        )
+        # 문서 전용 질문은 상한이 모두 0으로 내려오므로 공식 검색을 건너뛴다.
+        if k_law <= 0 and k_case <= 0 and k_guide <= 0:
+            result = RetrievalResult(question=question)
+        else:
+            runtime_service = (
+                service if service is not None
+                else chain_module.get_default_service()
+            )
+            routed = retrieve_staged(
+                runtime_service,
+                question,
+                k_law=k_law,
+                k_case=k_case,
+                k_guide=k_guide,
+            )
+            result = routed.result
+            logger.info(
+                "근거 라우팅: question_type=%s primary_sufficient=%s cases_added=%s",
+                routed.route.question_type,
+                routed.route.primary_sufficient,
+                routed.route.cases_added,
+            )
 
         return {
             "retrieval_result": result,
             "evidence_route": routed.route,
             "next_step": (
                 "abstain_no_evidence"
-                if result.is_empty()
+                if result.is_empty() and not document_evidences
                 else "generate"
             ),
         }
@@ -287,14 +295,20 @@ def build_generation_graph(
         state: GenerationGraphState,
     ) -> GenerationGraphState:
         question = state["safe_question"]
+        no_evidence_text = (
+            chain_module._NO_DOCUMENT_AND_OFFICIAL_EVIDENCE_TEXT
+            if document_search_attempted
+            else chain_module.prompt_module.NO_EVIDENCE_TEXT
+        )
         return {
             "answer": Answer(
                 question=question,
                 status="abstained",
                 text=(
-                    f"{chain_module.prompt_module.NO_EVIDENCE_TEXT}\n\n"
+                    f"{no_evidence_text}\n\n"
                     f"{chain_module.prompt_module.DISCLAIMER}"
                 ),
+                document_evidences=document_evidences,
             )
         }
 
@@ -305,16 +319,36 @@ def build_generation_graph(
         result = state["retrieval_result"]
 
         # 기존 runtime과 동일하게 main 생성 호출은 retry를 끈다.
-        main_llm = (
-            llm if llm is not None
-            else chain_module.get_llm(max_retries=0)
+        document_only = (
+            bool(document_evidences)
+            and k_law <= 0
+            and k_case <= 0
+            and k_guide <= 0
         )
-        qa_chain = chain_module.build_qa_chain(main_llm)
+        main_llm = (
+            llm
+            if llm is not None
+            else chain_module.get_llm(
+                max_retries=0,
+                **(
+                    {"max_tokens": max(384, chain_module.llm_module.LLM_MAX_TOKENS)}
+                    if document_only
+                    else {}
+                ),
+            )
+        )
+        qa_chain = (
+            chain_module.build_document_qa_chain(main_llm)
+            if document_only
+            else chain_module.build_qa_chain(main_llm)
+        )
 
         try:
             raw_text = qa_chain.invoke(
                 {
-                    "context": chain_module.prompt_module.format_context(result),
+                    "context": chain_module.prompt_module.format_context(
+                        result, document_evidences
+                    ),
                     "question": question,
                 }
             )
@@ -361,6 +395,7 @@ def build_generation_graph(
                 laws=tuple(result.laws),
                 cases=tuple(result.cases),
                 guides=tuple(result.guides),
+                document_evidences=document_evidences,
             )
         }
 
@@ -393,6 +428,8 @@ def build_generation_graph(
             laws=tuple(result.laws),
             cases=tuple(result.cases),
             guides=tuple(result.guides),
+            document_evidences=document_evidences,
+            requires_official_citation=not result.is_empty(),
         )
 
         return {
@@ -426,7 +463,9 @@ def build_generation_graph(
         candidate = state["candidate"]
         report = chain_module.audit_answer(
             candidate,
-            semantic_judge=chain_module._semantic_judge(get_aux_llm()),
+            semantic_judge=lambda question, text, evidences: chain_module._semantic_judge(
+                get_aux_llm()
+            )(question, text, evidences, document_evidences),
         )
 
         return {
@@ -447,6 +486,7 @@ def build_generation_graph(
                 state["safe_question"],
                 state["retrieval_result"],
                 state["validation_report"],
+                document_evidences,
                 validation_mode=state.get("validation_mode", "deterministic"),
             )
         }
@@ -586,6 +626,8 @@ def answer_question(
     k_guide: int = chain_module.DEFAULT_K_GUIDE,
     refuse_check: Callable[[str], bool] | None = None,
     auxiliary_llm=None,
+    document_evidences: tuple[SessionDocumentEvidence, ...] = (),
+    document_search_attempted: bool = False,
 ) -> Answer:
     """LangGraph가 실행·상태·분기를 담당하는 Generation 진입점.
 
@@ -603,19 +645,45 @@ def answer_question(
         k_guide=k_guide,
         refuse_check=refuse_check,
         auxiliary_llm=auxiliary_llm,
+        document_evidences=document_evidences,
+        document_search_attempted=document_search_attempted,
     )
 
-    state = graph.invoke(
-        {
-            "safe_question": safe_question,
-        },
-        config={
-            "run_name": "jeonseon_generation_graph",
-        },
-    )
+    # 문서 OCR 원문은 Graph state에 넣지 않는다. LangSmith가 활성화돼 있어도
+    # 문서 질의에서는 전체 실행 추적을 끄고, 근거는 위 클로저에서만 사용한다.
+    trace_scope = tracing_context(enabled=False) if document_evidences else nullcontext()
+    with trace_scope:
+        state = graph.invoke(
+            {
+                "safe_question": safe_question,
+            },
+            config={
+                "run_name": "jeonseon_generation_graph",
+            },
+        )
 
     answer = state.get("answer")
     if answer is None:
         raise RuntimeError("Generation Graph가 answer를 반환하지 않았습니다.")
 
     return answer
+
+
+def answer_document_question(
+    question: str,
+    document_evidences: tuple[SessionDocumentEvidence, ...],
+    **kwargs,
+) -> Answer:
+    """세션 OCR과 공식 검색 결과를 같은 Graph 정책·검증 경로로 처리한다."""
+
+    if document_evidences and chain_module._is_document_only_question(question):
+        kwargs.setdefault("k_law", 0)
+        kwargs.setdefault("k_case", 0)
+        kwargs.setdefault("k_guide", 0)
+
+    return answer_question(
+        question,
+        document_evidences=document_evidences,
+        document_search_attempted=True,
+        **kwargs,
+    )

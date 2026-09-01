@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from src.document_check.session_retrieval import SessionDocumentEvidence
 from src.retrieval.service import Evidence
 
 # answered  : 근거를 찾아 LLM 이 답을 만든 경우
@@ -43,6 +44,12 @@ class Answer:
     # 공식 안내(HUG·국세청 등). 법적 근거가 아니라 실무 절차 자료이고,
     # 검색이 질문 주제일 때만 0~2건 준다.
     guides: tuple[Evidence, ...] = ()
+    # 업로드 문서 OCR 근거는 공식 법령·판례 근거와 섞지 않는다. 법령 인용 및
+    # 조건 검증은 ``evidences``만 사용하고, 문서 근거는 페이지 출처 표시와
+    # 별도 semantic 검증에만 쓴다.
+    document_evidences: tuple[SessionDocumentEvidence, ...] = ()
+    # 문서 사실만 답할 수 있는 경우에는 공식 출처명을 강제하지 않는다.
+    requires_official_citation: bool = True
     # 최종 답변이 어디까지 검증됐는지 평가·운영 로그에서 확인하기 위한 값.
     validation_mode: ValidationMode = "not_applicable"
 
@@ -77,6 +84,33 @@ class Answer:
                     "url": evidence.source_url,
                     "doc_type": evidence.doc_type,
                     "chunk_id": evidence.chunk_id,
+                }
+            )
+        return out
+
+    def document_sources(self) -> list[dict]:
+        """화면용 업로드 문서 출처 목록.
+
+        OCR 원문은 반환하지 않는다. 파일명·문서 종류·쪽수만 표시해 사용자가
+        원본을 직접 대조할 수 있게 한다.
+        """
+
+        seen: set[tuple[str, int]] = set()
+        out: list[dict] = []
+        for evidence in self.document_evidences:
+            key = (evidence.document_id or evidence.filename, evidence.page_number)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "label": f"{evidence.filename} {evidence.page_number}쪽",
+                    "url": "",
+                    "doc_type": "uploaded_document",
+                    "chunk_id": evidence.chunk_id,
+                    "document_id": evidence.document_id,
+                    "document_kind": evidence.document_kind,
+                    "page_number": evidence.page_number,
                 }
             )
         return out

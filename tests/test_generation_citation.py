@@ -196,6 +196,48 @@ class CitationTests(unittest.TestCase):
 
         self.assertTrue(validate_citations(answer))
 
+    def test_case_with_name_and_e_dareum_is_not_misclassified_as_guide(self):
+        ev = make_evidence(
+            chunk_id="case-1",
+            doc_type="case",
+            citation="대법원 2011다49523 배당이의",
+            text="대법원 2011다49523 판결 내용",
+        )
+        answer = Answer(
+            question="질문",
+            status="answered",
+            text="",
+            raw_text="대법원 2011다49523 배당이의 판결에 따르면 그렇습니다.",
+            cases=(ev,),
+        )
+
+        audit = audit_citations(answer)
+
+        self.assertTrue(audit.is_valid)
+        self.assertEqual([(mention.kind, mention.text) for mention in audit.mentions], [
+            ("case", "대법원 2011다49523"),
+        ])
+
+    def test_court_without_case_number_is_not_a_guide_citation(self):
+        ev = make_evidence(
+            chunk_id="case-1",
+            doc_type="case",
+            citation="대법원 2011다49523 배당이의",
+            text="대법원 2011다49523 판결 내용",
+        )
+        answer = Answer(
+            question="질문",
+            status="answered",
+            text="",
+            raw_text="대법원 판례에 따르면 그렇습니다.",
+            cases=(ev,),
+        )
+
+        audit = audit_citations(answer)
+
+        self.assertTrue(audit.missing_required)
+        self.assertEqual(audit.unsupported, ())
+
     def test_supports_case_number_without_court_in_answer(self):
         ev = make_evidence(
             chunk_id="case-1",

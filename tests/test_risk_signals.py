@@ -74,6 +74,15 @@ def test_old_issue_date_requests_a_fresh_document() -> None:
     assert any("재발급" in check for check in stale.checks)
 
 
+def test_detects_spaced_ocr_issue_date() -> None:
+    signals = detect_risk_signals(
+        (page("발 급 일 2 0 2 5 년 0 3 월 1 2 일"),),
+        today=date(2026, 8, 26),
+    )
+
+    assert "stale_document" in {signal.rule_id for signal in signals}
+
+
 def test_rules_do_not_make_contract_safety_decision() -> None:
     signals = detect_risk_signals((page("갑구 가압류 을구 근저당권 설정"),))
 

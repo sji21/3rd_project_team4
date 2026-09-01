@@ -96,7 +96,7 @@ def strip_reasoning(text: str) -> str:
     return cleaned.strip()
 
 
-_SENTENCE_END = (".", "!", "?", "\u201d", '"')
+_SENTENCE_END = (".", "!", "?", "\u201d", '"', "]", ")")
 _HANGUL = re.compile(r"[가-힣]")
 _CUT_ENDS = (".", "!", "?", "\u201d")
 

@@ -26,6 +26,13 @@ def evidence(rank: int, citation: str, text: str, doc_type: str = "law") -> Evid
 
 
 class SystemPromptTests(unittest.TestCase):
+    def test_document_prompt_uses_only_uploaded_evidence(self) -> None:
+        text = prompt_module.SYSTEM_DOCUMENT_QA
+
+        self.assertIn("업로드 문서", text)
+        self.assertIn("법령명이나 판례를 인용하지", text)
+        self.assertIn("안전하다거나 위험하다고 최종 판정하지", text)
+
     def test_forbids_answering_outside_evidence(self) -> None:
         text = prompt_module.SYSTEM_QA
 

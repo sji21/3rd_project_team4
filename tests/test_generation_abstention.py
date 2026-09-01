@@ -128,6 +128,19 @@ class AbstentionTests(unittest.TestCase):
         self.assertFalse(decision.needs_semantic_review)
         self.assertEqual(calls, [])
 
+    def test_uploaded_registry_analysis_is_clearly_in_scope(self):
+        calls = []
+
+        decision = classify_scope(
+            "업로드한 등기부 등본 분석해줘",
+            semantic_judge=lambda question: calls.append(question) or True,
+        )
+
+        self.assertFalse(decision.out_of_scope)
+        self.assertEqual(decision.source, "deterministic")
+        self.assertFalse(decision.needs_semantic_review)
+        self.assertEqual(calls, [])
+
     def test_semantic_judge_can_refuse_unrelated_domain(self):
         decision = classify_scope(
             "내일 서울 날씨 알려줘",
