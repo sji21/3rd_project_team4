@@ -210,16 +210,24 @@ def detect_civil_topics(question: str) -> tuple[CivilTopic, ...]:
         return ()
 
     topics: list[CivilTopic] = []
-    # 설비 이름과 고장 표현을 함께 본다. "고장"이라고 쓰지 않고 "안 나온다",
-    # "안 돌아간다" 처럼 증상만 적는 질문이 실제로 많다.
-    repair = _has_any(
+    # 명시적인 고장·수리 표현은 그 자체로 충분하다. 반면 "작동" 같은 일반어와
+    # 설비 이름은 각각 단독으로 쓰일 수 있으므로 반드시 **설비 + 고장 증상**을
+    # 함께 확인한다. 그렇지 않으면 "확정일자 제도는 어떻게 작동하나요?"까지
+    # 제623조로 잘못 분류된다.
+    explicit_repair = _has_any(
+        q, ("고장", "수리", "고치", "고쳐", "고쳤", "망가", "하자"),
+    )
+    equipment = _has_any(
         q,
         ("보일러", "온수", "난방", "에어컨", "세탁기", "냉장고", "싱크대", "변기",
-         "인덕션", "가스레인지", "전등",
-         "고장", "수리", "고치", "고쳐", "고쳤", "망가", "하자",
-         "안 나오", "안 나와", "작동", "안 켜", "안 돌아가", "안 내려가",
-         "막히", "막혀"),
+         "인덕션", "가스레인지", "전등"),
     )
+    malfunction = _has_any(
+        q,
+        ("안 나오", "안 나와", "작동을 안", "작동이 안", "작동 안", "작동하지 않",
+         "안 켜", "안 돌아가", "안 내려가", "막히", "막혀", "멈췄", "멈추"),
+    )
+    repair = explicit_repair or (equipment and malfunction)
     reimbursement = repair and _has_any(
         q,
         ("제 돈", "먼저 내", "먼저 냈", "먼저 지불", "비용을 받", "비용 받을",
@@ -542,7 +550,8 @@ class RetrievalService:
             "  python -m src.ingestion.fetch_minbeop --records data/parsed/minbeop_records.jsonl\n"
             "  python -m src.ingestion.load_laws --records data/parsed/minbeop_records.jsonl "
             "--export data/chunks/chunks.jsonl\n"
-            "  python -m src.retrieval.index --chunks data/chunks/knowledge_chunks.jsonl",
+            "  python -m src.retrieval.index --chunks data/chunks/chunks.jsonl "
+            "--path data/index/chroma_kurev1_1024",
             len(missing), len(civil.include_ids), ", ".join(missing),
         )
 

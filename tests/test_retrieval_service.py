@@ -510,6 +510,10 @@ CIVIL_MUST_STAY_QUIET: tuple[str, ...] = (
     "집주인이 바뀌면 계약서를 새로 써야 하나요?",
     "보증금을 다른 사람보다 먼저 돌려받을 수 있나요?",
     "확정일자를 안 받으면 어떻게 되나요?",
+    # 설비명·증상 단독으로 수선의무가 발동하면 안 된다
+    "확정일자 제도는 어떻게 작동하나요?",
+    "전세보증금반환보증은 어떻게 작동하나요?",
+    "에어컨이 옵션으로 포함되어 있나요?",
     # 집주인이 남에게 세를 놓는 경우는 전대가 아니라 주임법 제6조의3 문제다
     "집주인이 실제로 살겠다며 내보낸 뒤 다른 사람에게 세를 놓으면 "
     "손해배상을 청구할 수 있나요?",
@@ -556,6 +560,8 @@ class CivilCorpusWarningTests(unittest.TestCase):
         message = "\n".join(captured.output)
         self.assertIn("민법", message)
         self.assertIn("fetch_minbeop", message)
+        self.assertIn("data/chunks/chunks.jsonl", message)
+        self.assertNotIn("data/chunks/knowledge_chunks.jsonl", message)
 
     def test_complete_civil_corpus_is_silent(self):
         chunks = CHUNKS + CIVIL_CHUNKS
