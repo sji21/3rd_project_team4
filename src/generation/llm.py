@@ -44,8 +44,16 @@ def _env_number(name: str, default: str, cast):
         return cast(default)
 
 
-# 원격 URL 환경변수를 사용하지 않고, 이 PC의 Ollama만 호출한다.
-LLM_BASE_URL = "http://localhost:11434/v1"
+def _env_text(name: str, default: str) -> str:
+    """문자열 환경 변수를 읽고 공백 값이면 안전한 기본값을 사용한다."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip()
+
+
+# 로컬 Ollama가 기본값이고, RunPod HTTP 프록시나 SSH 터널 주소로 덮어쓸 수 있다.
+LLM_BASE_URL = _env_text("JEONSEON_LLM_BASE_URL", "http://localhost:11434/v1")
 LLM_MODEL = os.getenv("JEONSEON_LLM_MODEL", "qwen3:8b-q4_K_M")
 
 # 법령의 조건·시점 표현이 매 실행마다 달라지지 않도록 기본 생성은 결정적으로 한다.
@@ -55,6 +63,14 @@ LLM_MAX_TOKENS = _env_number("JEONSEON_LLM_MAX_TOKENS", "256", int)
 # 현재 RAG 프롬프트를 담으면서 KV 캐시 적재를 최소화한다.
 LLM_NUM_CTX = _env_number("JEONSEON_LLM_NUM_CTX", "4096", int)
 LLM_KEEP_ALIVE = os.getenv("JEONSEON_LLM_KEEP_ALIVE", "30m").strip() or "30m"
+OLLAMA_USER_AGENT = "PATCH32-Streamlit/1.0"
+LOCAL_OLLAMA_BASE_URL = "http://localhost:11434"
+# RunPod가 꺼져 있을 때 180초 생성 timeout까지 기다리지 않고 로컬로 전환한다.
+OLLAMA_FAILOVER_PROBE_TIMEOUT = 3.0
+
+# 같은 Streamlit 프로세스에서 매 LLM 호출마다 RunPod 상태를 다시 조회하지 않는다.
+# 실제 생성 호출이 실패하면 캐시를 버리고 로컬로 한 번 더 시도한다.
+_ROUTE_CACHE: dict[tuple[str, str], str] = {}
 
 
 def _env_flag(name: str, default: str = "1") -> bool:
@@ -188,16 +204,90 @@ def _duration_seconds(value) -> float | None:
 
 # ── Ollama native 호출 ────────────────────────────────────────
 
-def _native_base_url() -> str:
-    """로컬 Ollama native base URL을 만든다."""
-    base = LLM_BASE_URL.rstrip("/")
+def _normalize_native_base_url(base_url: str) -> str:
+    """OpenAI 호환 `/v1` 주소를 Ollama native base URL로 정규화한다."""
+    base = base_url.rstrip("/")
     if base.endswith("/v1"):
         base = base[:-3]
     return base.rstrip("/")
 
 
-def _native_chat_url() -> str:
-    return f"{_native_base_url()}/api/chat"
+def _native_base_url() -> str:
+    """환경변수로 선택한 우선 Ollama의 native base URL을 만든다."""
+    return _normalize_native_base_url(LLM_BASE_URL)
+
+
+def _candidate_base_urls() -> tuple[str, ...]:
+    """설정된 RunPod를 우선하고 로컬 Ollama를 마지막 후보로 둔다."""
+    primary = _native_base_url()
+    local = _normalize_native_base_url(LOCAL_OLLAMA_BASE_URL)
+    if primary == local:
+        return (local,)
+    return (primary, local)
+
+
+def _native_chat_url(base_url: str | None = None) -> str:
+    return f"{base_url or _native_base_url()}/api/chat"
+
+
+def _native_tags_url(base_url: str) -> str:
+    return f"{base_url}/api/tags"
+
+
+def _model_names(base_url: str, timeout: float) -> list[str]:
+    request = urllib.request.Request(
+        _native_tags_url(base_url),
+        headers={"User-Agent": OLLAMA_USER_AGENT},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return [model.get("name", "") for model in payload.get("models", [])]
+
+
+def _has_model(names: list[str], model: str) -> bool:
+    return any(name == model or name.startswith(model) for name in names)
+
+
+def _select_ollama_base(
+    model: str,
+    timeout: float = OLLAMA_FAILOVER_PROBE_TIMEOUT,
+    *,
+    force_check: bool = False,
+) -> str:
+    """사용 가능한 우선 Ollama를 고르고, 실패하면 로컬을 선택한다."""
+    candidates = _candidate_base_urls()
+    cache_key = (candidates[0], model)
+    if not force_check and cache_key in _ROUTE_CACHE:
+        return _ROUTE_CACHE[cache_key]
+
+    failures: list[str] = []
+    probe_timeout = max(0.1, min(float(timeout), OLLAMA_FAILOVER_PROBE_TIMEOUT))
+    for index, base_url in enumerate(candidates):
+        try:
+            names = _model_names(base_url, probe_timeout)
+        except (OSError, ValueError) as error:
+            failures.append(f"{base_url}: 연결 실패({error})")
+            continue
+
+        if not _has_model(names, model):
+            failures.append(
+                f"{base_url}: 모델 없음(현재: {', '.join(names) or '없음'})"
+            )
+            continue
+
+        _ROUTE_CACHE[cache_key] = base_url
+        if index > 0:
+            logger.warning(
+                "우선 Ollama를 사용할 수 없어 로컬로 전환합니다: primary=%s fallback=%s",
+                candidates[0],
+                base_url,
+            )
+        return base_url
+
+    raise RuntimeError(
+        f"모델 '{model}'을 사용할 수 있는 Ollama가 없습니다. " + "; ".join(failures)
+    )
 
 
 def _to_ollama_messages(value) -> list[dict[str, str]]:
@@ -298,28 +388,58 @@ def _build_native_ollama(**overrides):
         elif THINK_OFF:
             payload["think"] = False
 
-        request = urllib.request.Request(
-            _native_chat_url(),
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-
-        started = time.perf_counter()
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except TimeoutError as error:
-            logger.warning(
-                "로컬 Ollama 호출 timeout: elapsed=%.3fs max_tokens=%d",
-                time.perf_counter() - started,
-                max_tokens,
+            selected_base = _select_ollama_base(model, timeout)
+        except RuntimeError as error:
+            raise RuntimeError(f"Ollama 호출 준비 실패: {error}") from error
+
+        candidates = _candidate_base_urls()
+        attempt_bases = [selected_base]
+        local_base = _normalize_native_base_url(LOCAL_OLLAMA_BASE_URL)
+        if selected_base != local_base and local_base in candidates:
+            attempt_bases.append(local_base)
+
+        failures: list[str] = []
+        result = None
+        active_base = selected_base
+        started = time.perf_counter()
+
+        for attempt_index, base_url in enumerate(attempt_bases):
+            request = urllib.request.Request(
+                _native_chat_url(base_url),
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    # RunPod HTTP 프록시의 Cloudflare가 Python urllib 기본
+                    # User-Agent 요청을 403으로 거부하므로 명시적으로 지정한다.
+                    "User-Agent": OLLAMA_USER_AGENT,
+                },
+                method="POST",
             )
-            raise RuntimeError(f"로컬 Ollama 호출 timeout ({timeout}초)") from error
-        except OSError as error:
-            raise RuntimeError(f"로컬 Ollama 호출 실패: {error}") from error
-        except ValueError as error:
-            raise RuntimeError(f"Ollama 응답 JSON 해석 실패: {error}") from error
+
+            attempt_started = time.perf_counter()
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            except (OSError, ValueError) as error:
+                failures.append(f"{base_url}: {error}")
+                _ROUTE_CACHE.pop((candidates[0], model), None)
+                logger.warning(
+                    "Ollama 호출 실패: endpoint=%s elapsed=%.3fs error=%s",
+                    base_url,
+                    time.perf_counter() - attempt_started,
+                    error,
+                )
+                if attempt_index + 1 < len(attempt_bases):
+                    logger.warning("로컬 Ollama로 호출을 재시도합니다: %s", local_base)
+                continue
+
+            active_base = base_url
+            _ROUTE_CACHE[(candidates[0], model)] = base_url
+            break
+
+        if result is None:
+            raise RuntimeError("Ollama 호출 실패: " + "; ".join(failures))
 
         message = result.get("message") or {}
         content = message.get("content") or ""
@@ -329,9 +449,10 @@ def _build_native_ollama(**overrides):
         eval_seconds = _duration_seconds(result.get("eval_duration"))
 
         logger.warning(
-            "Ollama 성능 진단: status=done elapsed=%.3fs load=%.3fs "
+            "Ollama 성능 진단: status=done endpoint=%s elapsed=%.3fs load=%.3fs "
             "prompt_eval=%.3fs eval=%.3fs prompt_tokens=%s output_tokens=%s "
             "input_chars=%d max_tokens=%d keep_alive=%s done_reason=%s",
+            active_base,
             time.perf_counter() - started,
             load_seconds or 0.0,
             prompt_seconds or 0.0,
@@ -355,6 +476,7 @@ def _build_native_ollama(**overrides):
                 "prompt_eval_duration": result.get("prompt_eval_duration"),
                 "eval_count": result.get("eval_count"),
                 "eval_duration": result.get("eval_duration"),
+                "endpoint": active_base,
             },
         )
 
@@ -389,21 +511,16 @@ def get_llm(fake_responses: list[str] | None = None, **overrides):
 
 
 def probe(timeout: float = 5.0) -> tuple[bool, str]:
-    """Ollama 가 떠 있고 모델이 받아져 있는지 확인한다."""
-    tags_url = f"{_native_base_url()}/api/tags"
+    """RunPod를 우선 확인하고 실패하면 로컬 Ollama 상태를 확인한다."""
     try:
-        with urllib.request.urlopen(tags_url, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError) as error:
+        active_base = _select_ollama_base(LLM_MODEL, timeout, force_check=True)
+    except RuntimeError as error:
         return False, (
-            f"로컬 Ollama 에 연결하지 못했습니다 ({_native_base_url()}). "
-            f"`ollama serve` 가 떠 있는지 확인하세요. 원인: {error}"
+            "RunPod와 로컬 Ollama 모두 사용할 수 없습니다. "
+            f"`ollama serve`와 `ollama pull {LLM_MODEL}` 상태를 확인하세요. 원인: {error}"
         )
 
-    names = [model.get("name", "") for model in payload.get("models", [])]
-    if not any(name == LLM_MODEL or name.startswith(LLM_MODEL) for name in names):
-        return False, (
-            f"모델 '{LLM_MODEL}' 이(가) 없습니다. `ollama pull {LLM_MODEL}` 로 먼저 받으세요. "
-            f"현재 받아진 모델: {', '.join(names) or '없음'}"
-        )
-    return True, f"준비됨 — {LLM_MODEL} @ {_native_base_url()}"
+    primary = _native_base_url()
+    if active_base != primary:
+        return True, f"준비됨 — {LLM_MODEL} @ {active_base} (RunPod 대신 로컬 사용 중)"
+    return True, f"준비됨 — {LLM_MODEL} @ {active_base}"
