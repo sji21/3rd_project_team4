@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -485,6 +487,82 @@ class CivilRoutingTests(unittest.TestCase):
         where = {"$or": [{"doc_type": "law"}, {"doc_type": "case"}]}
         self.assertTrue(matches({"doc_type": "case"}, where))
         self.assertFalse(matches({"doc_type": "guide"}, where))
+
+
+# 아래 문항은 신호어 표를 보지 않고 먼저 썼다. 표에 있는 문구를 그대로 옮겨
+# 문항을 만들면 표를 표로 검증하는 셈이라, 통과해도 실제 사용자 표현에 대한
+# 보증이 되지 않는다. 실제로 이 방식으로 제629조의 자연어 표현 누락을 찾았다.
+CIVIL_MUST_FIRE: tuple[tuple[str, str], ...] = (
+    # 전대 — 사이에 말이 끼거나 어미가 달라도 잡혀야 한다
+    ("민법-제629조", "친구에게 방을 다시 빌려줘도 되나요?"),
+    ("민법-제629조", "집주인 허락 없이 다른 사람에게 재임대해도 되나요?"),
+    ("민법-제629조", "제가 사는 집 방 하나를 세를 놓아도 되나요?"),
+    ("민법-제629조", "계약 기간이 남았는데 원룸을 다른 사람에게 넘겨도 되나요?"),
+    # 수선의무 — "고장" 이라고 쓰지 않고 증상만 적는 질문
+    ("민법-제623조", "에어컨이 안 나오는데 집주인한테 말하면 되나요?"),
+    ("민법-제623조", "보일러가 작동을 안 하는데 누가 고쳐야 하나요?"),
+    ("민법-제623조", "싱크대 물이 안 내려가요. 집주인이 해결해줘야 하나요?"),
+    ("민법-제623조", "세탁기가 안 돌아가는데 집주인이 바꿔줘야 하나요?"),
+)
+
+CIVIL_MUST_STAY_QUIET: tuple[str, ...] = (
+    "전세를 월세로 바꾸자고 하는데 따라야 하나요?",
+    "집주인이 바뀌면 계약서를 새로 써야 하나요?",
+    "보증금을 다른 사람보다 먼저 돌려받을 수 있나요?",
+    "확정일자를 안 받으면 어떻게 되나요?",
+    # 집주인이 남에게 세를 놓는 경우는 전대가 아니라 주임법 제6조의3 문제다
+    "집주인이 실제로 살겠다며 내보낸 뒤 다른 사람에게 세를 놓으면 "
+    "손해배상을 청구할 수 있나요?",
+    "계약 연장을 요구했는데 집주인이 직접 산다고 해서 나왔습니다. "
+    "그런데 다른 사람에게 다시 세를 놓으면 어떻게 하나요?",
+)
+
+
+class CivilNaturalWordingTests(unittest.TestCase):
+    """신호어와 독립적으로 쓴 문항으로 판정을 잠근다."""
+
+    def test_natural_wording_is_detected(self):
+        for article_id, question in CIVIL_MUST_FIRE:
+            with self.subTest(question=question):
+                found = [t.article_id for t in detect_civil_topics(question)]
+                self.assertIn(article_id, found)
+
+    def test_housing_law_questions_stay_quiet(self):
+        for question in CIVIL_MUST_STAY_QUIET:
+            with self.subTest(question=question):
+                self.assertEqual(detect_civil_topics(question), ())
+
+    def test_evaluation_sets_never_trigger_civil_routing(self):
+        """dev·holdout 은 전부 주택임대차 질문이다. 하나라도 걸리면 오발동이다."""
+        root = Path(__file__).resolve().parents[1]
+        for name in ("dev", "holdout"):
+            path = root / "data/eval" / f"{name}.jsonl"
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                with self.subTest(qid=item["qid"]):
+                    self.assertEqual(detect_civil_topics(item["question"]), ())
+
+
+class CivilCorpusWarningTests(unittest.TestCase):
+    """민법 청크가 없으면 조건부 검색이 조용히 죽는다. 경고로 드러낸다."""
+
+    def test_missing_civil_chunks_are_reported(self):
+        with self.assertLogs("src.retrieval.service", level="WARNING") as captured:
+            RetrievalService(CHUNKS, None)
+        message = "\n".join(captured.output)
+        self.assertIn("민법", message)
+        self.assertIn("fetch_minbeop", message)
+
+    def test_complete_civil_corpus_is_silent(self):
+        chunks = CHUNKS + CIVIL_CHUNKS
+        logger = logging.getLogger("src.retrieval.service")
+        with patch.object(logger, "warning") as warned:
+            RetrievalService(chunks, None)
+        warned.assert_not_called()
 
 
 class PromptBlockTests(unittest.TestCase):

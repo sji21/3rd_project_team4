@@ -210,9 +210,15 @@ def detect_civil_topics(question: str) -> tuple[CivilTopic, ...]:
         return ()
 
     topics: list[CivilTopic] = []
+    # 설비 이름과 고장 표현을 함께 본다. "고장"이라고 쓰지 않고 "안 나온다",
+    # "안 돌아간다" 처럼 증상만 적는 질문이 실제로 많다.
     repair = _has_any(
         q,
-        ("보일러", "온수", "난방", "고장", "수리", "고치", "고쳐", "고쳤", "망가", "하자"),
+        ("보일러", "온수", "난방", "에어컨", "세탁기", "냉장고", "싱크대", "변기",
+         "인덕션", "가스레인지", "전등",
+         "고장", "수리", "고치", "고쳐", "고쳤", "망가", "하자",
+         "안 나오", "안 나와", "작동", "안 켜", "안 돌아가", "안 내려가",
+         "막히", "막혀"),
     )
     reimbursement = repair and _has_any(
         q,
@@ -228,14 +234,29 @@ def detect_civil_topics(question: str) -> tuple[CivilTopic, ...]:
     notice = _has_any(q, ("고장", "하자", "금이", "누수", "물이 새", "물 새", "곰팡이", "수리")) and _has_any(
         q, ("알려", "말해야", "말 안 하고", "통지", "연락해야", "연락 안 하고")
     )
-    sublet = _has_any(
-        q, ("전대", "친구한테 빌려", "친구에게 빌려", "친구를 들여", "친구가 살",
-            "다른 사람한테 빌려", "다른 사람에게 빌려", "방 하나를 빌려",
-            "방 하나만 쓰게", "다시 빌려주", "돈을 받고 살게", "돈을 조금 받"),
-    )
     arrears = _has_any(q, ("월세", "차임")) and _has_any(q, ("밀", "연체"))
     termination = _has_any(q, ("계약을 끝", "계약 끝내", "계약 해지", "해지하", "나가라", "바로 나가", "쫓아내"))
     renewal = _has_any(q, ("갱신", "재계약", "연장", "다음 계약"))
+
+    # 전대는 "누구에게" 와 "어떻게" 를 따로 본다. 한 덩어리 문구로 잡으면 사이에
+    # 말이 끼는 순간 놓친다 — "친구에게 빌려" 는 "친구에게 **방을 다시** 빌려" 를
+    # 잡지 못했다.
+    sublet_target = _has_any(
+        q, ("친구", "다른 사람", "다른사람", "제3자", "타인", "방 하나", "방하나"),
+    )
+    sublet_action = _has_any(
+        q, ("빌려주", "빌려줘", "빌려 주", "세를 놓", "세를 주", "들여",
+            "쓰게 하", "살게 하", "넘겨", "넘기", "돈을 받고 살", "돈을 조금 받"),
+    )
+    # **집주인이** 남에게 세를 놓는 경우는 전대가 아니다. 갱신 거절 후 실거주
+    # 위반(주임법 제6조의3)이라 민법을 넣으면 근거가 틀린다.
+    landlord_relet = _has_any(
+        q, ("실제로 살", "직접 산다", "직접 살", "내보낸", "내보내", "손해배상"),
+    )
+    sublet = (
+        _has_any(q, ("전대", "재임대"))
+        or (sublet_target and sublet_action and not landlord_relet and not renewal)
+    )
 
     # 더 구체적인 권리부터 담고, 하나의 수리 질문에서 필요비와 수선의무가 함께
     # 필요한 경우에만 두 조문을 쓴다.
@@ -499,6 +520,31 @@ class RetrievalService:
             if chunk["metadata"].get("article_id") in set(civil.include_ids)
         ]
         self._retrievers[civil.name] = self._build(civil, civil_chunks)
+        self._warn_if_civil_missing(civil, civil_chunks)
+
+    @staticmethod
+    def _warn_if_civil_missing(civil: Corpus, civil_chunks: list[dict]) -> None:
+        """민법 조문이 코퍼스에 없으면 알린다.
+
+        없으면 조건부 검색이 **조용히** 아무것도 내지 않는다. 주제 판정은 정상
+        동작하므로 로그에도 흔적이 남지 않고, 재적재를 빠뜨린 사람은 "민법이 안
+        나온다" 는 증상만 보게 된다. 서비스는 계속 떠야 하므로 예외는 던지지
+        않고 경고만 남긴다.
+        """
+        found = {
+            chunk["metadata"].get("article_id") for chunk in civil_chunks
+        }
+        missing = [article for article in civil.include_ids if article not in found]
+        if not missing:
+            return
+        logger.warning(
+            "민법 조문 %d/%d건이 코퍼스에 없어 조건부 검색이 동작하지 않습니다: %s\n"
+            "  python -m src.ingestion.fetch_minbeop --records data/parsed/minbeop_records.jsonl\n"
+            "  python -m src.ingestion.load_laws --records data/parsed/minbeop_records.jsonl "
+            "--export data/chunks/chunks.jsonl\n"
+            "  python -m src.retrieval.index --chunks data/chunks/knowledge_chunks.jsonl",
+            len(missing), len(civil.include_ids), ", ".join(missing),
+        )
 
     def _build(self, corpus: Corpus, chunks: list[dict]) -> HybridRetriever | None:
         """묶음 하나에 대한 검색기. 청크가 없으면 만들지 않는다."""
