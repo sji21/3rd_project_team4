@@ -16,6 +16,9 @@ from src.retrieval.terms import expand, expand_law
 from src.retrieval.hybrid import DEFAULT_RRF_K
 from src.retrieval.service import (
     CASE,
+    CIVIL,
+    CIVIL_ARTICLE_IDS,
+    CIVIL_TITLE,
     COMMERCIAL_LAWS,
     GUIDE,
     LAW,
@@ -25,6 +28,7 @@ from src.retrieval.service import (
     Evidence,
     RetrievalService,
     citation_of,
+    detect_civil_topics,
     route_law_corpus,
     split_by_type,
 )
@@ -105,6 +109,18 @@ CHUNKS = [
                 "임대인의 미납국세는 임대차개시일까지 세무서에서 열람 신청할 수 있다",
                 "국세청 미납국세 등 열람신청 안내", "임대인 미납국세 열람"),
     REPEALED,
+]
+
+CIVIL_CHUNKS = [
+    law_chunk(f"civil-{number}", text, f"제{number}조", title=CIVIL_TITLE)
+    for number, text in (
+        (623, "임대인은 목적물을 임차인에게 인도하고 사용 수익에 필요한 상태를 유지하게 할 의무를 부담한다"),
+        (626, "임차인이 임차물 보존에 관한 필요비를 지출한 때에는 임대인에게 상환을 청구할 수 있다"),
+        (627, "임차물 일부를 사용 수익할 수 없게 된 때에는 차임의 감액을 청구하고 목적을 달성할 수 없으면 해지할 수 있다"),
+        (629, "임차인은 임대인의 동의 없이 권리를 양도하거나 임차물을 전대하지 못한다"),
+        (634, "임차물에 수리를 요하거나 권리를 주장하는 자가 있을 때에는 임대인에게 지체 없이 통지하여야 한다"),
+        (640, "차임연체액이 2기의 차임액에 달하는 때에는 임대인은 계약을 해지할 수 있다"),
+    )
 ]
 
 
@@ -307,13 +323,16 @@ class RoutingTests(unittest.TestCase):
         for question in self.HOUSING:
             with self.subTest(question=question):
                 self.assertEqual(
-                    route_law_corpus(question).exclude_titles, COMMERCIAL_LAWS
+                    route_law_corpus(question).exclude_titles,
+                    COMMERCIAL_LAWS + (CIVIL_TITLE,),
                 )
 
     def test_commercial_questions_keep_commercial_laws(self):
         for question in self.COMMERCIAL:
             with self.subTest(question=question):
-                self.assertEqual(route_law_corpus(question).exclude_titles, ())
+                self.assertEqual(
+                    route_law_corpus(question).exclude_titles, (CIVIL_TITLE,)
+                )
 
     def test_commercial_signal_widens_instead_of_switching(self):
         """상가로 바꾸는 것이 아니라 제외를 푸는 것이다.
@@ -321,7 +340,7 @@ class RoutingTests(unittest.TestCase):
         "상가주택"처럼 둘 다 걸린 질문에서 주택 조문이 사라지면 안 된다.
         """
         corpus = route_law_corpus("상가주택인데 주택 부분만 전세로 살고 있어요")
-        self.assertEqual(corpus.exclude_titles, ())
+        self.assertEqual(corpus.exclude_titles, (CIVIL_TITLE,))
         self.assertEqual(corpus.doc_types, LAW.doc_types)
 
     def test_routing_keeps_the_tuned_parameters(self):
@@ -353,6 +372,114 @@ class WhereClauseTests(unittest.TestCase):
         self.assertTrue(matches(housing, where))
         self.assertFalse(matches(commercial, where))
         self.assertFalse(matches(repealed, where))
+
+
+class CivilRoutingTests(unittest.TestCase):
+    """민법은 의도가 확인될 때만 0~2건, 전체 법령 3칸 안에서 나온다."""
+
+    def service(self, dense: bool = True) -> RetrievalService:
+        chunks = CHUNKS + CIVIL_CHUNKS
+        return RetrievalService(chunks, FakeDense(chunks) if dense else None)
+
+    def test_candidate_ids_are_locked_to_the_reviewed_six_articles(self):
+        self.assertEqual(
+            set(CIVIL_ARTICLE_IDS),
+            {f"민법-제{number}조" for number in (623, 626, 627, 629, 634, 640)},
+        )
+
+    def test_unrelated_question_gets_no_civil_article(self):
+        question = "전입신고를 늦게 하면 어떤 문제가 생기나요?"
+        self.assertEqual(detect_civil_topics(question), ())
+        result = self.service().search(question, k_law=3, k_case=0)
+        self.assertFalse(any(e.citation.startswith("민법") for e in result.laws))
+        self.assertEqual(result.civil_topics, ())
+
+    def test_repair_question_uses_one_of_three_law_slots(self):
+        result = self.service().search(
+            "보일러가 고장 났는데 집주인이 고쳐주는 게 맞나요?",
+            k_law=3,
+            k_case=0,
+        )
+        self.assertEqual(len(result.laws), 3)
+        self.assertEqual(result.laws[0].citation.split()[0], "민법")
+        self.assertIn("제623조", result.laws[0].citation)
+        self.assertEqual(result.civil_topics, ("수선의무",))
+
+    def test_two_distinct_repair_grounds_use_at_most_two_slots(self):
+        result = self.service().search(
+            "보일러가 고장 나서 제 돈으로 먼저 수리비를 냈는데 돌려받을 수 있나요?",
+            k_law=3,
+            k_case=0,
+        )
+        civil = [e for e in result.laws if e.citation.startswith("민법")]
+        self.assertEqual(len(result.laws), 3)
+        self.assertEqual(len(civil), 2)
+        self.assertTrue(any("제623조" in e.citation for e in civil))
+        self.assertTrue(any("제626조" in e.citation for e in civil))
+
+    def test_arrears_termination_routes_to_article_640(self):
+        result = self.service().search(
+            "월세를 두 달 밀렸다고 바로 나가라고 합니다.", k_law=3, k_case=0
+        )
+        self.assertIn("제640조", result.laws[0].citation)
+
+    def test_arrears_renewal_question_stays_in_housing_law(self):
+        question = "월세를 두 달 밀렸는데 다음 계약 갱신을 거절할 수 있나요?"
+        self.assertEqual(detect_civil_topics(question), ())
+        result = self.service().search(question, k_law=3, k_case=0)
+        self.assertFalse(any(e.citation.startswith("민법") for e in result.laws))
+
+    def test_sublet_routes_to_article_629(self):
+        result = self.service().search(
+            "집주인 허락 없이 방 하나를 친구한테 빌려줘도 되나요?",
+            k_law=3,
+            k_case=0,
+        )
+        self.assertIn("제629조", result.laws[0].citation)
+
+    def test_natural_reimbursement_wording_routes_to_article_626(self):
+        result = self.service().search(
+            "싱크대가 막혀서 제 돈으로 사람을 불러 고쳤는데 비용을 받을 수 있나요?",
+            k_law=3,
+            k_case=0,
+        )
+        self.assertTrue(any("제626조" in e.citation for e in result.laws[:2]))
+
+    def test_natural_sublet_wording_routes_to_article_629(self):
+        result = self.service().search(
+            "투룸에 친구를 들여 방 하나만 쓰게 하고 돈을 조금 받아도 되나요?",
+            k_law=3,
+            k_case=0,
+        )
+        self.assertIn("제629조", result.laws[0].citation)
+
+    def test_unusable_room_wording_routes_to_article_627(self):
+        result = self.service().search(
+            "누수 때문에 방을 쓰지 못하면 월세를 줄일 수 있나요?",
+            k_law=3,
+            k_case=0,
+        )
+        self.assertIn("제627조", result.laws[0].citation)
+
+    def test_repair_notice_wording_routes_to_article_634(self):
+        result = self.service().search(
+            "집에 수리가 필요하면 집주인에게 알려야 하나요?",
+            k_law=3,
+            k_case=0,
+        )
+        self.assertIn("제634조", result.laws[0].citation)
+
+    def test_zero_law_limit_also_disables_civil_search(self):
+        result = self.service().search("보일러가 고장 났어요", k_law=0, k_case=0)
+        self.assertEqual(result.laws, [])
+        self.assertEqual(result.civil_topics, ())
+
+    def test_bm25_indexes_are_physically_separated(self):
+        service = self.service(dense=False)
+        standard = service._retrievers["법령"].members[0].retriever.chunks
+        civil = service._retrievers[CIVIL.name].members[0].retriever.chunks
+        self.assertFalse(any(c["metadata"]["title"] == CIVIL_TITLE for c in standard))
+        self.assertEqual(len(civil), 6)
 
     def test_or_clause_is_supported_too(self):
         where = {"$or": [{"doc_type": "law"}, {"doc_type": "case"}]}

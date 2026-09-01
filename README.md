@@ -308,6 +308,13 @@ python -m src.ingestion.load_laws \
   --records data/parsed/law_records.jsonl \
   --export data/chunks/chunks.jsonl
 
+# 1-1. 검토를 통과한 조건부 검색용 민법 임대차 6개 조문 추가
+python -m src.ingestion.fetch_minbeop \
+  --records data/parsed/minbeop_records.jsonl
+python -m src.ingestion.load_laws \
+  --records data/parsed/minbeop_records.jsonl \
+  --export data/chunks/chunks.jsonl
+
 # 2. 규격 검증 (필수 필드 · article_id 형식 · 평가 정답 존재 여부)
 python -m src.ingestion.validate_chunks data/chunks/chunks.jsonl \
   --eval-set data/eval/dev.jsonl

@@ -40,7 +40,7 @@ from src.retrieval.retriever import (
     Retriever,
     load_chunks,
 )
-from src.retrieval.terms import expand, expand_law
+from src.retrieval.terms import expand, expand_civil, expand_law
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,26 @@ LAW_RRF_K = 5
 LAW = Corpus("법령", LAW_TYPES, rrf_k=LAW_RRF_K, query_expander=expand_law)
 CASE = Corpus("판례", CASE_TYPES)
 
+# 민법은 기존 법령과 같은 BM25 묶음에 넣지 않는다. 검색 때 필터로만 빼면 IDF는
+# 이미 민법을 포함해 계산되어 민법이 결과에 보이지 않아도 기존 순위가 흔들린다.
+# 생성 모델에 넘기는 법령 3칸 중 질문 의도가 확인될 때만 0~2칸을 사용한다.
+CIVIL_TITLE = "민법"
+CIVIL_ARTICLE_IDS = (
+    "민법-제623조",
+    "민법-제626조",
+    "민법-제627조",
+    "민법-제629조",
+    "민법-제634조",
+    "민법-제640조",
+)
+CIVIL = Corpus(
+    "민법",
+    LAW_TYPES,
+    rrf_k=LAW_RRF_K,
+    query_expander=expand_civil,
+    include_ids=CIVIL_ARTICLE_IDS,
+)
+
 # 공식 안내를 따로 두는 이유가 있다. HUG 상품안내나 국세청 민원안내는 **법적 근거가
 # 아니라 실무 안내**다. 법령과 한 묶음으로 넘기면 모델이 "법에 따르면 보증 한도는…"
 # 같은 문장을 쓴다. 조문 5칸 중 하나를 안내가 먹는 문제도 있다.
@@ -159,9 +179,86 @@ def route_law_corpus(question: str, base: Corpus = LAW) -> Corpus:
     한계: 낱말 표에 없는 표현은 잡지 못한다. 평가셋 27문항에 상가 질문이 하나도
     없어 이 분기는 검색 성능으로 검증하지 못했다. 판정 자체는 테스트로 잠갔다.
     """
+    # 민법은 상가 여부와 관계없이 별도 검색한다. 기본 법령 검색에 섞이면 질문과
+    # 무관한 민법이 생성 근거를 차지하고, BM25 IDF도 바뀐다.
     if mentions_commercial(question):
-        return replace(base, exclude_titles=())
-    return replace(base, exclude_titles=COMMERCIAL_LAWS)
+        return replace(base, exclude_titles=(CIVIL_TITLE,))
+    return replace(base, exclude_titles=COMMERCIAL_LAWS + (CIVIL_TITLE,))
+
+
+@dataclass(frozen=True)
+class CivilTopic:
+    """질문에서 확인된 민법 임대차 주제와 가져올 단일 조문."""
+
+    name: str
+    article_id: str
+
+
+def _has_any(question: str, signals: tuple[str, ...]) -> bool:
+    return any(signal in question for signal in signals)
+
+
+def detect_civil_topics(question: str) -> tuple[CivilTopic, ...]:
+    """민법 임대차가 직접 필요한 질문만 최대 두 주제로 분류한다.
+
+    넓은 단어 하나로 발동시키지 않는다. 예를 들어 ``월세가 밀렸다``만으로는
+    제640조를 내지 않고, 계약 해지 의도까지 있어야 한다. 갱신·재계약 질문은
+    주택임대차보호법 제6조의3이 중심이므로 제640조를 명시적으로 막는다.
+    """
+    q = question.strip()
+    if not q:
+        return ()
+
+    topics: list[CivilTopic] = []
+    repair = _has_any(
+        q,
+        ("보일러", "온수", "난방", "고장", "수리", "고치", "고쳐", "고쳤", "망가", "하자"),
+    )
+    reimbursement = repair and _has_any(
+        q,
+        ("제 돈", "먼저 내", "먼저 냈", "먼저 지불", "비용을 받", "비용 받을",
+         "돌려받", "청구", "업체 불러서 고쳤", "사람 불러 고쳤"),
+    )
+    unusable = _has_any(q, ("누수", "물이 새", "물 새", "곰팡이", "침수")) and _has_any(
+        q,
+        ("못 쓰", "쓰지 못", "사용할 수 없", "사용하지 못", "살 수 없", "생활이 안",
+         "월세를 깎", "월세 깎", "월세를 줄", "월세 줄", "감액", "중간에 나가",
+         "계약을 정리", "해지"),
+    )
+    notice = _has_any(q, ("고장", "하자", "금이", "누수", "물이 새", "물 새", "곰팡이", "수리")) and _has_any(
+        q, ("알려", "말해야", "말 안 하고", "통지", "연락해야", "연락 안 하고")
+    )
+    sublet = _has_any(
+        q, ("전대", "친구한테 빌려", "친구에게 빌려", "친구를 들여", "친구가 살",
+            "다른 사람한테 빌려", "다른 사람에게 빌려", "방 하나를 빌려",
+            "방 하나만 쓰게", "다시 빌려주", "돈을 받고 살게", "돈을 조금 받"),
+    )
+    arrears = _has_any(q, ("월세", "차임")) and _has_any(q, ("밀", "연체"))
+    termination = _has_any(q, ("계약을 끝", "계약 끝내", "계약 해지", "해지하", "나가라", "바로 나가", "쫓아내"))
+    renewal = _has_any(q, ("갱신", "재계약", "연장", "다음 계약"))
+
+    # 더 구체적인 권리부터 담고, 하나의 수리 질문에서 필요비와 수선의무가 함께
+    # 필요한 경우에만 두 조문을 쓴다.
+    if sublet:
+        topics.append(CivilTopic("무단 전대", "민법-제629조"))
+    if arrears and termination and not renewal:
+        topics.append(CivilTopic("차임 연체 해지", "민법-제640조"))
+    if reimbursement:
+        topics.append(CivilTopic("필요비 상환", "민법-제626조"))
+    if unusable:
+        topics.append(CivilTopic("사용불능·차임 감액", "민법-제627조"))
+    if notice:
+        topics.append(CivilTopic("하자 통지", "민법-제634조"))
+    if repair and not unusable and not notice:
+        topics.append(CivilTopic("수선의무", "민법-제623조"))
+    elif reimbursement and len(topics) < 2:
+        topics.append(CivilTopic("수선의무", "민법-제623조"))
+
+    deduplicated: list[CivilTopic] = []
+    for topic in topics:
+        if topic.article_id not in {item.article_id for item in deduplicated}:
+            deduplicated.append(topic)
+    return tuple(deduplicated[:2])
 
 
 @dataclass(frozen=True)
@@ -287,6 +384,7 @@ class RetrievalResult:
     laws: list[Evidence] = field(default_factory=list)
     cases: list[Evidence] = field(default_factory=list)
     guides: list[Evidence] = field(default_factory=list)
+    civil_topics: tuple[str, ...] = ()
 
     def as_prompt_context(self) -> str:
         """법령과 판례를 구분해 붙인 근거 묶음.
@@ -373,6 +471,7 @@ class RetrievalService:
         law: Corpus = LAW,
         case: Corpus = CASE,
         guide: Corpus = GUIDE,
+        civil: Corpus = CIVIL,
     ) -> None:
         """chunks 는 법령·판례가 섞여 있어도 된다. doc_type 으로 갈라 쓴다.
 
@@ -381,11 +480,25 @@ class RetrievalService:
         """
         self.dense = dense
         self.corpora = (law, case, guide)
+        self.civil = civil
         self._chunks = {c["chunk_id"]: c for c in chunks}
-        self._retrievers = {
-            corpus.name: self._build(corpus, split_by_type(chunks, corpus.doc_types))
-            for corpus in self.corpora
-        }
+        self._retrievers = {}
+        for corpus in self.corpora:
+            corpus_chunks = split_by_type(chunks, corpus.doc_types)
+            if corpus.name == law.name:
+                # 민법이 결과에 안 보여도 같은 BM25 색인에 있으면 IDF가 바뀐다.
+                # 기존 법령 순위를 그대로 보존하려고 색인 단계부터 분리한다.
+                corpus_chunks = [
+                    chunk for chunk in corpus_chunks
+                    if chunk["metadata"].get("title") != CIVIL_TITLE
+                ]
+            self._retrievers[corpus.name] = self._build(corpus, corpus_chunks)
+
+        civil_chunks = [
+            chunk for chunk in split_by_type(chunks, civil.doc_types)
+            if chunk["metadata"].get("article_id") in set(civil.include_ids)
+        ]
+        self._retrievers[civil.name] = self._build(civil, civil_chunks)
 
     def _build(self, corpus: Corpus, chunks: list[dict]) -> HybridRetriever | None:
         """묶음 하나에 대한 검색기. 청크가 없으면 만들지 않는다."""
@@ -470,12 +583,51 @@ class RetrievalService:
             return RetrievalResult(question=question)
 
         law, case, guide = self.corpora
+        topics = detect_civil_topics(question) if k_law > 0 else ()
+        civil_laws = self._search_civil(question, topics, min(2, k_law))
+        standard_laws = self._search_one(
+            route_law_corpus(question, law),
+            question,
+            max(0, k_law - len(civil_laws)),
+        )
+        # 민법은 질문 의도를 직접 설명하는 조문이라 앞에 둔다. Evidence.rank는
+        # 각 검색기의 내부 순위가 아니라 LLM이 보는 최종 순위로 다시 매긴다.
+        laws = [
+            replace(evidence, rank=rank)
+            for rank, evidence in enumerate(civil_laws + standard_laws, start=1)
+        ]
         return RetrievalResult(
             question=question,
-            laws=self._search_one(route_law_corpus(question, law), question, k_law),
+            laws=laws,
             cases=self._search_one(case, question, k_case),
             guides=self._search_guides(guide, question, k_guide),
+            civil_topics=tuple(topic.name for topic in topics if any(
+                evidence.citation.startswith(CIVIL_TITLE)
+                and topic.article_id == self._chunks[evidence.chunk_id]["metadata"].get("article_id", "")
+                for evidence in civil_laws
+            )),
         )
+
+    def _search_civil(
+        self,
+        question: str,
+        topics: tuple[CivilTopic, ...],
+        limit: int,
+    ) -> list[Evidence]:
+        """감지된 민법 주제마다 정확히 한 조문씩, 최대 ``limit``건을 가져온다."""
+        if not topics or limit <= 0:
+            return []
+
+        picked: list[Evidence] = []
+        for topic in topics:
+            found = self._search_one(
+                replace(self.civil, include_ids=(topic.article_id,)), question, 1
+            )
+            if found:
+                picked.append(found[0])
+            if len(picked) >= limit:
+                break
+        return picked
 
     def _search_guides(
         self, corpus: Corpus, question: str, limit: int

@@ -18,6 +18,8 @@
     A) dev 27문항        법령 gold 조문의 Recall@3/@5 — 회귀 확인
     B) 판례 홀드아웃 20문항  판례 순위가 정말 안 움직이는지 — 구조상 안 움직여야 한다
     C) 신규 20문항        민법 추가 전후 법령 TOP5 변화
+    D) 법령 홀드아웃 20문항  봉인 평가셋의 Recall@3/@5 및 TOP3 오염 확인
+    E) 민법 직접 질문 5문항  최소 후보 5개 조문이 실제로 검색되는지 확인
 
 실행:
     python scripts/compare_minbeop_corpus.py --out data/eval/runs/minbeop_compare.json
@@ -26,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -49,6 +52,7 @@ from src.retrieval.retriever import load_chunks
 from src.retrieval.service import DEFAULT_MODEL, RetrievalService
 
 REPO = Path(__file__).resolve().parents[1]
+REVIEW_HOLDOUT = REPO / "data/eval/minbeop_review_holdout_20260901.jsonl"
 
 # 국가법령정보센터 민법. lsiSeq 와 시행일은 법령 페이지에서 확인한 값이다.
 MINBEOP_SEQ = "284415"
@@ -92,6 +96,14 @@ NEW_QUESTIONS: list[tuple[int, str]] = [
          "어떤 조건을 갖춰야 하나요?"),
     (20, "계약이 자동으로 연장된 상태에서 세입자가 이사를 가고 싶다면 언제 "
          "집주인에게 알려야 하나요?"),
+]
+
+MINBEOP_QUESTIONS: list[tuple[str, str, str]] = [
+    ("civil-623", "보일러가 고장 났는데 집주인이 수리해야 하나요?", "민법-제623조"),
+    ("civil-626", "제가 먼저 낸 수리비를 집주인에게 청구할 수 있나요?", "민법-제626조"),
+    ("civil-627", "누수 때문에 방 일부를 쓰지 못하면 월세를 줄일 수 있나요?", "민법-제627조"),
+    ("civil-634", "집에 수리가 필요하면 집주인에게 알려야 하나요?", "민법-제634조"),
+    ("civil-640", "월세를 두 달치 밀리면 집주인이 계약을 끝낼 수 있나요?", "민법-제640조"),
 ]
 
 
@@ -290,6 +302,147 @@ def main() -> int:
             print(f"  {name:6s} TOP3 변동 {moved}  민법 TOP3 진입 {entered}", flush=True)
             for number, lost in dropped.items():
                 print(f"         {number}번 생성 근거에서 빠짐: {lost}", flush=True)
+
+        # D) 법령 홀드아웃 회귀. out_of_scope 문항은 검색 채점에서 제외한다.
+        print("\n[D] 법령 홀드아웃 회귀", flush=True)
+        report["law_holdout"] = []
+        for item in read_jsonl(REPO / "data/eval/holdout.jsonl"):
+            gold = item.get("gold_articles") or []
+            if not gold:
+                continue
+            row = {
+                "qid": item["qid"],
+                "question": item["question"],
+                "gold": gold,
+            }
+            for name in VARIANTS:
+                ranked = article_ids(services[name], chunkmaps[name],
+                                     item["question"], args.k)
+                row[name] = ranked
+                row[f"{name}_top3"] = sum(1 for g in gold if g in ranked[:3])
+                row[f"{name}_top5"] = sum(1 for g in gold if g in ranked[:5])
+            report["law_holdout"].append(row)
+
+        holdout_gold = sum(len(r["gold"]) for r in report["law_holdout"])
+        report["law_holdout_dropped_from_top3"] = {}
+        for name in VARIANTS:
+            top3 = sum(r[f"{name}_top3"] for r in report["law_holdout"])
+            top5 = sum(r[f"{name}_top5"] for r in report["law_holdout"])
+            moved = [r["qid"] for r in report["law_holdout"]
+                     if r["base"][:3] != r[name][:3]]
+            dropped = {
+                r["qid"]: [a for a in r["base"][:3] if a not in r[name][:3]]
+                for r in report["law_holdout"]
+                if [a for a in r["base"][:3] if a not in r[name][:3]]
+            }
+            report["law_holdout_dropped_from_top3"][name] = dropped
+            print(f"  {name:6s} Recall@3 {top3}/{holdout_gold} "
+                  f"({top3 / holdout_gold:.1%})  Recall@5 {top5}/{holdout_gold}  "
+                  f"TOP3 구성 변동 {moved}", flush=True)
+            for qid, lost in dropped.items():
+                print(f"         {qid} 생성 근거에서 빠짐: {lost}", flush=True)
+
+        # E) 최소 후보 5개 조문별 직접 질문. 기존 평가셋에 없던 조문은 이 표를
+        # 탐색적 확인으로만 사용하며, 채택 수치로 과장하지 않는다.
+        print("\n[E] 민법 직접 질문(탐색)", flush=True)
+        report["minbeop_questions"] = []
+        for qid, question, gold in MINBEOP_QUESTIONS:
+            row = {"qid": qid, "question": question, "gold": gold}
+            for name in ("min5", "min6", "max11"):
+                ranked = article_ids(services[name], chunkmaps[name], question, args.k)
+                row[name] = ranked
+                row[f"{name}_rank"] = next(
+                    (rank for rank, article in enumerate(ranked, 1) if article == gold), 0
+                )
+            report["minbeop_questions"].append(row)
+            print(f"  {qid}: min5 정답 순위 {row['min5_rank'] or '5위 밖'}", flush=True)
+
+        # F) 외부 생성·사전 라벨링·해시 봉인한 민법 검토 전용 평가셋.
+        # 이 결과로 민법 구성을 고르므로 독립 최종 holdout 수치로 재사용하지 않는다.
+        if REVIEW_HOLDOUT.exists():
+            review_hash = hashlib.sha256(REVIEW_HOLDOUT.read_bytes()).hexdigest()
+            review_items = read_jsonl(REVIEW_HOLDOUT)
+            scored_items = [item for item in review_items if item.get("gold_articles")]
+            abstain_items = [item for item in review_items if not item.get("gold_articles")]
+            report["review_holdout_sha256"] = review_hash
+            report["review_holdout"] = []
+            report["review_abstain"] = []
+
+            print("\n[F] 봉인 민법 검토셋", flush=True)
+            print(f"  SHA-256 {review_hash}", flush=True)
+            for item in scored_items:
+                row = {
+                    "qid": item["qid"],
+                    "question": item["question"],
+                    "group": item["group"],
+                    "difficulty": item["difficulty"],
+                    "answer_type": item["answer_type"],
+                    "gold": item["gold_articles"],
+                }
+                for name in VARIANTS:
+                    ranked = article_ids(services[name], chunkmaps[name],
+                                         item["question"], args.k)
+                    row[name] = ranked
+                report["review_holdout"].append(row)
+
+            for item in abstain_items:
+                row = {
+                    "qid": item["qid"],
+                    "question": item["question"],
+                    "answer_type": item["answer_type"],
+                    "abstain_reason": item["abstain_reason"],
+                }
+                for name in VARIANTS:
+                    row[name] = article_ids(services[name], chunkmaps[name],
+                                            item["question"], args.k)
+                report["review_abstain"].append(row)
+
+            n = len(report["review_holdout"])
+            total_gold = sum(len(row["gold"]) for row in report["review_holdout"])
+            report["review_metrics"] = {}
+            for name in VARIANTS:
+                ranks: list[int] = []
+                recalled3 = 0
+                recalled5 = 0
+                for row in report["review_holdout"]:
+                    gold = set(row["gold"])
+                    ranked = row[name]
+                    ranks.append(next(
+                        (rank for rank, article in enumerate(ranked, 1)
+                         if article in gold), 0
+                    ))
+                    recalled3 += sum(article in ranked[:3] for article in gold)
+                    recalled5 += sum(article in ranked[:5] for article in gold)
+                metrics = {
+                    "n": n,
+                    "gold_count": total_gold,
+                    "hit_at_1": sum(rank == 1 for rank in ranks) / n,
+                    "hit_at_3": sum(0 < rank <= 3 for rank in ranks) / n,
+                    "hit_at_5": sum(0 < rank <= 5 for rank in ranks) / n,
+                    "recall_at_3_micro": recalled3 / total_gold,
+                    "recall_at_5_micro": recalled5 / total_gold,
+                    "mrr": sum(1 / rank for rank in ranks if rank) / n,
+                    "top3_changed_from_base": [
+                        row["qid"] for row in report["review_holdout"]
+                        if row["base"][:3] != row[name][:3]
+                    ],
+                    "dropped_from_base_top3": {
+                        row["qid"]: [article for article in row["base"][:3]
+                                     if article not in row[name][:3]]
+                        for row in report["review_holdout"]
+                        if [article for article in row["base"][:3]
+                            if article not in row[name][:3]]
+                    },
+                }
+                report["review_metrics"][name] = metrics
+                print(
+                    f"  {name:6s} Hit@1 {metrics['hit_at_1']:.1%}  "
+                    f"Hit@3 {metrics['hit_at_3']:.1%}  "
+                    f"Recall@3 {recalled3}/{total_gold} "
+                    f"({metrics['recall_at_3_micro']:.1%})  "
+                    f"MRR {metrics['mrr']:.3f}",
+                    flush=True,
+                )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, ensure_ascii=False, indent=1),

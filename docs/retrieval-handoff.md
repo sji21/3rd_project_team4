@@ -36,6 +36,7 @@ result = service.search("전세 사는 중에 집주인이 바뀌면 보증금�
 result.laws                  # list[Evidence] — 법령 5건
 result.cases                 # list[Evidence] — 판례 5건
 result.guides                # list[Evidence] — 공식 안내 0~2건 (질문 주제에 따라)
+result.civil_topics          # tuple[str, ...] — 실제 반환된 민법 주제(없으면 빈 튜플)
 result.as_prompt_context()   # 프롬프트에 그대로 넣을 문자열
 result.is_empty()            # 근거를 하나도 못 찾았을 때 ABSTAIN 판정용
 ```
@@ -96,9 +97,13 @@ DB와 인덱스는 `.gitignore` 대상이라 저장소로 따라가지 않습니
 만들어야 합니다.**
 
 ```bash
-# 1. 법령 133조문을 SQLite 에 넣고 청크로 뽑기
+# 1. 주택·상가 법령 133조문을 SQLite 에 넣고 청크로 뽑기
 python -m src.ingestion.fetch_law_mock --records data/parsed/law_records.jsonl
 python -m src.ingestion.load_laws --records data/parsed/law_records.jsonl --export data/chunks/chunks.jsonl
+
+# 1-1. 검토를 통과한 민법 임대차 6개 조문을 같은 DB·청크에 추가
+python -m src.ingestion.fetch_minbeop --records data/parsed/minbeop_records.jsonl
+python -m src.ingestion.load_laws --records data/parsed/minbeop_records.jsonl --export data/chunks/chunks.jsonl
 
 # 2. 판례 26건 적재
 python scripts/load_case_only_demo_corpus.py
@@ -107,7 +112,7 @@ python scripts/load_case_only_demo_corpus.py
 python -m src.ingestion.fetch_guides --records data/parsed/guide_records.jsonl
 python -m src.ingestion.load_guides --records data/parsed/guide_records.jsonl --export data/chunks/guides.jsonl
 
-# 4. Chroma 색인 (법령 -> 판례 -> 안내)
+# 4. Chroma 색인 (법령 139 -> 판례 -> 안내)
 python -m src.retrieval.index --chunks data/chunks/chunks.jsonl --path data/index/chroma_kurev1_1024
 python -m src.retrieval.index --chunks data/chunks/cases.jsonl  --path data/index/chroma_kurev1_1024
 python -m src.retrieval.index --chunks data/chunks/guides.jsonl --path data/index/chroma_kurev1_1024
@@ -137,7 +142,7 @@ python -m src.retrieval.index --chunks data/chunks/guides.jsonl --path data/inde
 python -c "from src.retrieval.service import RetrievalService; print(RetrievalService.from_index().search('대항력은 언제 생기나요?').as_prompt_context()[:300])"
 ```
 
-컬렉션이 **165건**(law 74 · decree 59 · case 26 · guide 6)이면 정상입니다.
+컬렉션이 **171건**(law 80 · decree 59 · case 26 · guide 6)이면 정상입니다.
 
 ### 오프라인·사내망에서 실행할 때
 
@@ -163,17 +168,17 @@ Windows PowerShell 이면 `$env:HF_HUB_OFFLINE = "1"` 형태로 설정합니다.
 
 | 경로 | 내용 | 비고 |
 | --- | --- | --- |
-| `data/database/knowledge.sqlite3` | 원천. 법령 133조문 · 판례 26건 | gitignore |
-| `data/chunks/chunks.jsonl` | 법령 청크 133건 | gitignore |
+| `data/database/knowledge.sqlite3` | 원천. 법령 139조문 · 판례 26건 | gitignore |
+| `data/chunks/chunks.jsonl` | 법령 청크 139건(민법 6건 포함) | gitignore |
 | `data/chunks/cases.jsonl` | 판례 청크 26건 | gitignore |
 | `data/chunks/guides.jsonl` | 공식 안내 청크 6건 | gitignore |
-| `data/index/chroma_kurev1_1024` | KURE-v1 벡터 165건 | gitignore |
+| `data/index/chroma_kurev1_1024` | KURE-v1 벡터 171건 | gitignore |
 | `data/eval/dev.jsonl` | 평가 질문 27문항 (25개에 정답 조문) | 저장소에 있음 |
 | `docs/chunk-schema.md` | 청크 규격 | 새 문서 추가 시 필독 |
 | `docs/eval-questions.md` | 평가 질문 목록 | |
 
-수록 법령은 넷입니다 — 주택임대차보호법(41청크), 같은 법 시행령(35), 상가건물
-임대차보호법(33), 같은 법 시행령(24).
+수록 법령은 다섯입니다 — 주택임대차보호법(41청크), 같은 법 시행령(35), 상가건물
+임대차보호법(33), 같은 법 시행령(24), 조건부 검색용 민법(6).
 
 ### 공식 안내는 별도 묶음입니다
 
@@ -191,10 +196,10 @@ HUG·국세청 안내를 `result.guides` 로 따로 돌려줍니다. **법적 �
 
 | 코퍼스 | 규모 |
 | --- | --- |
-| 법령·시행령 | 133청크 |
+| 법령·시행령 | 139청크 |
 | 판례 | 26청크 |
 | 공식 안내 | 6청크 |
-| **Chroma 합계** | **165청크** |
+| **Chroma 합계** | **171청크** |
 
 법령 5칸을 안내가 먹지 않습니다. 기본 검색은 **법령 5 + 판례 5 + 안내 0~2 = 10~12건**
 이고, 법령 목록에는 `law`·`decree`만 들어갑니다. 안내 건수는 질문 주제에 따라 달라지며
@@ -253,6 +258,20 @@ HUG·국세청 안내를 `result.guides` 로 따로 돌려줍니다. **법적 �
 ```python
 service.search(질문, k_guide=0)
 ```
+
+### 민법 반환 기준 — 법령 3칸 안에서 0~2건
+
+민법 6개 조문을 일반 법령 검색에 항상 섞지 않습니다. 질문에서 수선의무·필요비 상환·
+일부 사용불능과 차임 감액·무단 전대·하자 통지·차임 연체 해지 중 하나가 확인될 때만
+해당 조문을 **0~2건** 반환합니다. 생성 기본값 기준으로 민법이 1건 나오면 일반 법령은
+2건, 민법이 2건이면 일반 법령은 1건이 되어 전달되는 법령 합계는 계속 3건입니다.
+
+이 구분은 LLM이 아니라 `detect_civil_topics()`의 결정론적 문맥 규칙이 수행합니다.
+`월세가 밀렸다`만으로 제640조를 내지 않고 계약 해지 의도까지 확인하며, 갱신·재계약
+질문은 주택임대차보호법이 중심이므로 제640조를 넣지 않습니다. 일반 법령 BM25
+색인에서도 민법을 물리적으로 분리해, 민법이 반환되지 않은 질문의 IDF와 순위가 바뀌지
+않게 했습니다. 측정 결과는 `docs/minbeop-conditional-routing-result-20260901.md`에
+기록합니다.
 
 ---
 
