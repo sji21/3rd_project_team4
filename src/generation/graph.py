@@ -68,7 +68,7 @@ class GenerationGraphState(TypedDict, total=False):
     injection: Any
     scope: Any
     retrieval_result: RetrievalResult
-    evidence_route: EvidenceRoute
+    evidence_route: EvidenceRoute | None
     raw_text: str
     candidate: Answer
     validation_report: Any
@@ -259,6 +259,7 @@ def build_generation_graph(
         # 안전성/범위 검사를 통과한 뒤에만 검색 서비스를 만든다.
         # 기존 chain의 Retrieval-before/after 경계를 그대로 유지한다.
         # 문서 전용 질문은 상한이 모두 0으로 내려오므로 공식 검색을 건너뛴다.
+        routed = None
         if k_law <= 0 and k_case <= 0 and k_guide <= 0:
             result = RetrievalResult(question=question)
         else:
@@ -281,9 +282,10 @@ def build_generation_graph(
                 routed.route.cases_added,
             )
 
+        # 문서 전용 질문은 공식 검색을 돌리지 않으므로 라우팅 결과가 없다.
         return {
             "retrieval_result": result,
-            "evidence_route": routed.route,
+            "evidence_route": routed.route if routed is not None else None,
             "next_step": (
                 "abstain_no_evidence"
                 if result.is_empty() and not document_evidences
