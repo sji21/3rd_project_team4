@@ -591,6 +591,34 @@ def clear_chat() -> None:
     st.session_state["active_upload_job_id"] = None
 
 
+_TERMINAL_UPLOAD_JOB_STATUSES = frozenset({"completed", "failed"})
+
+
+def _finish_upload_job(job_id: str | None) -> None:
+    """작업 종료 경로에서 활성 ID와 임시 작업을 한 번에 정리한다."""
+
+    if not job_id:
+        st.session_state["active_upload_job_id"] = None
+        return
+    st.session_state["upload_jobs"].pop(job_id, None)
+    if st.session_state.get("active_upload_job_id") == job_id:
+        st.session_state["active_upload_job_id"] = None
+
+
+def reconcile_upload_job_state() -> bool:
+    """입력창을 그리기 전에 고아·종료 업로드 작업을 제거한다."""
+
+    job_id = st.session_state.get("active_upload_job_id")
+    if not job_id:
+        return False
+
+    upload_job = st.session_state["upload_jobs"].get(job_id)
+    if upload_job is None or upload_job.get("status") in _TERMINAL_UPLOAD_JOB_STATUSES:
+        _finish_upload_job(job_id)
+        return False
+    return True
+
+
 def _document_id(kind: str, data: bytes) -> str:
     """같은 파일을 반복 선택해도 중복 적재하지 않을 세션 내 식별자."""
 
@@ -1279,58 +1307,73 @@ def process_active_upload_job(retrieval_loader=None) -> None:
     job_id = st.session_state.get("active_upload_job_id")
     upload_job = st.session_state["upload_jobs"].get(job_id)
     if upload_job is None:
-        st.session_state["active_upload_job_id"] = None
-        return
+        _finish_upload_job(job_id)
+        st.rerun()
 
-    with st.status("첨부 문서 OCR 준비 중...", expanded=True) as upload_status:
-        added_names, upload_errors, confirmation_requests = _store_uploaded_documents(
-            upload_job,
-            upload_status,
-        )
-        if upload_errors or confirmation_requests:
-            upload_status.update(
-                label=(
-                    "첨부 문서 OCR 완료 · 일부 파일을 확인해 주세요."
-                    if added_names
-                    else "첨부 문서 확인 필요"
-                ),
-                state="error",
-                expanded=True,
+    try:
+        with st.status("첨부 문서 OCR 준비 중...", expanded=True) as upload_status:
+            added_names, upload_errors, confirmation_requests = _store_uploaded_documents(
+                upload_job,
+                upload_status,
             )
+            if upload_errors or confirmation_requests:
+                upload_status.update(
+                    label=(
+                        "첨부 문서 OCR 완료 · 일부 파일을 확인해 주세요."
+                        if added_names
+                        else "첨부 문서 확인 필요"
+                    ),
+                    state="error",
+                    expanded=True,
+                )
+            else:
+                upload_status.update(
+                    label="첨부 문서 OCR 완료",
+                    state="complete",
+                    expanded=False,
+                )
+
+        question = upload_job["question"]
+        if not added_names:
+            details = "\n\n".join(confirmation_requests + upload_errors)
+            notice = details or "문서를 추가하지 못했습니다. 파일 상태를 확인한 뒤 다시 첨부해 주세요."
+            _append_assistant_notice(notice)
+        elif not question:
+            notice = (
+                "문서를 현재 세션에 추가했습니다. 이어서 문서에서 확인할 내용을 질문해 주세요."
+            )
+            _append_assistant_notice(notice)
         else:
-            upload_status.update(
-                label="첨부 문서 OCR 완료",
-                state="complete",
-                expanded=False,
+            _answer_visible_question(
+                question,
+                upload_job["previous_messages"],
+                retrieval_loader,
             )
 
-    question = upload_job["question"]
-    if not added_names:
-        details = "\n\n".join(confirmation_requests + upload_errors)
-        notice = details or "문서를 추가하지 못했습니다. 파일 상태를 확인한 뒤 다시 첨부해 주세요."
-        _append_assistant_notice(notice)
-    elif not question:
-        notice = (
-            "문서를 현재 세션에 추가했습니다. 이어서 문서에서 확인할 내용을 질문해 주세요."
-        )
-        _append_assistant_notice(notice)
-    else:
-        _answer_visible_question(
-            question,
-            upload_job["previous_messages"],
-            retrieval_loader,
-        )
+        upload_job["status"] = "completed"
+    except Exception:
+        logger.exception("활성 업로드 작업 처리 중 예외가 발생했습니다.")
+        upload_job["status"] = "failed"
+        try:
+            _append_assistant_notice(
+                "첨부 문서 처리를 완료하지 못했습니다. 파일을 다시 첨부해 주세요."
+            )
+        except Exception:
+            logger.exception("업로드 실패 안내를 화면에 표시하지 못했습니다.")
+    finally:
+        try:
+            _sync_upload_message(upload_job)
+        except Exception:
+            logger.exception("업로드 메시지의 최종 상태를 동기화하지 못했습니다.")
+        _finish_upload_job(job_id)
 
-    upload_job["status"] = "completed"
-    _sync_upload_message(upload_job)
-    st.session_state["active_upload_job_id"] = None
-    st.session_state["upload_jobs"].pop(job_id, None)
     st.rerun()
 
 
 def main() -> None:
     configure_page()
     init_chat_state()
+    upload_in_progress = reconcile_upload_job_state()
     readiness_area = st.container(key="retrieval_readiness_area")
     render_header()
     render_document_manager()
@@ -1343,7 +1386,7 @@ def main() -> None:
         "예: 전입신고 효력은? · 파일을 함께 첨부해 문서 내용을 질문할 수 있어요.",
         accept_file="multiple",
         file_type=("pdf", "jpg", "jpeg", "png"),
-        disabled=bool(st.session_state.get("active_upload_job_id")),
+        disabled=upload_in_progress,
         submit_mode="disable",
     )
 

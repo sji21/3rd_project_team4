@@ -77,6 +77,7 @@ def test_initial_screen_is_chat_first_without_quick_questions(monkeypatch) -> No
 
     assert not app.exception
     assert len(app.chat_input) == 1
+    assert not app.chat_input[0].disabled
     assert app.chat_input[0].placeholder.startswith("예: 전입신고")
     assert len(app.sidebar.button) == 0
     assert "🗑️ 대화 내용 지우기" not in [button.label for button in app.button]
@@ -114,6 +115,7 @@ def test_chat_input_runs_the_existing_answer_chain(monkeypatch) -> None:
 
     assert not app.exception
     assert any("테스트 답변입니다." in markdown.value for markdown in app.markdown)
+    assert not app.chat_input[0].disabled
 
 
 def _seed_active_upload_job(app: AppTest, *, question: str) -> None:
@@ -224,6 +226,7 @@ def test_slow_ocr_keeps_one_visible_user_message_and_runs_once(monkeypatch) -> N
     ]
     assert app.session_state["active_upload_job_id"] is None
     assert app.session_state["upload_jobs"] == {}
+    assert not app.chat_input[0].disabled
 
     # 완료 후 일반 rerun에서도 같은 파일의 OCR과 사용자 메시지가 중복되지 않는다.
     app.run(timeout=20)
@@ -263,6 +266,75 @@ def test_ocr_failure_keeps_question_filename_and_error(monkeypatch) -> None:
     assert "문서를 분석하지 못했습니다" in user_message["attachments"][0]["error"]
     assert app.session_state["active_upload_job_id"] is None
     assert app.session_state["upload_jobs"] == {}
+    assert not app.chat_input[0].disabled
+
+
+def test_orphaned_active_upload_id_is_cleared_before_chat_input(monkeypatch) -> None:
+    app = load_app(monkeypatch)
+    app.session_state["upload_jobs"] = {}
+    app.session_state["active_upload_job_id"] = "missing-job"
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert app.session_state["active_upload_job_id"] is None
+    assert app.session_state["upload_jobs"] == {}
+    assert not app.chat_input[0].disabled
+
+
+def test_terminal_upload_job_is_cleared_before_chat_input(monkeypatch) -> None:
+    app = load_app(monkeypatch)
+    app.session_state["upload_jobs"] = {
+        "finished-job": {"job_id": "finished-job", "status": "completed"}
+    }
+    app.session_state["active_upload_job_id"] = "finished-job"
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert app.session_state["active_upload_job_id"] is None
+    assert app.session_state["upload_jobs"] == {}
+    assert not app.chat_input[0].disabled
+
+
+def test_unexpected_upload_job_error_reactivates_chat_input(monkeypatch) -> None:
+    app = load_app(monkeypatch)
+    previous_messages = list(app.session_state["chat_messages"])
+    message_id = "upload-broken-job"
+    app.session_state["chat_messages"].append(
+        {
+            "message_id": message_id,
+            "role": "user",
+            "content": "문서를 확인해줘",
+            "status": None,
+            "sources": [],
+            "context_content": "문서를 확인해줘",
+            "attachments": [],
+        }
+    )
+    app.session_state["upload_jobs"] = {
+        "broken-job": {
+            "job_id": "broken-job",
+            "message_id": message_id,
+            "question": "문서를 확인해줘",
+            # len() 단계에서 예외가 발생하는 비정상 작업 상태를 재현한다.
+            "files": None,
+            "previous_messages": previous_messages,
+            "status": "processing",
+        }
+    }
+    app.session_state["active_upload_job_id"] = "broken-job"
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert app.session_state["active_upload_job_id"] is None
+    assert app.session_state["upload_jobs"] == {}
+    assert not app.chat_input[0].disabled
+    assert any(
+        "첨부 문서 처리를 완료하지 못했습니다" in message.get("content", "")
+        for message in app.session_state["chat_messages"]
+    )
 
 
 def test_ambiguous_ocr_requests_confirmation_without_generic_answer(monkeypatch) -> None:
