@@ -32,7 +32,7 @@ def test_ocr_documents_are_attached_through_the_chat_input():
 def test_user_facing_status_messages_are_descriptive():
     assert '"answered": ("근거를 확인해 답변드렸습니다.", "✅")' in TEXT
     assert '"abstained": ("답변을 바로 제공하기 어렵습니다.", "⚠️")' in TEXT
-    assert '"refused": ("이 질문은 전세ON의 답변 범위에 포함되지 않습니다.", "🚫")' in TEXT
+    assert '"refused": ("이 질문은 LENS의 답변 범위에 포함되지 않습니다.", "🚫")' in TEXT
 
 
 def test_main_does_not_render_a_sidebar():

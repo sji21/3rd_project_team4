@@ -1,4 +1,4 @@
-"""전세ON 법령·판례 지식 DB 초기화 API."""
+"""LENS 법령·판례 지식 DB 초기화 API."""
 
 from __future__ import annotations
 

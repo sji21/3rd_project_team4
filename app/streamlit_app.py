@@ -1,4 +1,4 @@
-"""전세ON 챗봇 UI.
+"""LENS 챗봇 UI.
 
 현재 확정된 Generation/Retrieval 경계를 그대로 사용한다.
 OCR·업로드 문서 세션 기억 기능은 후속 연결 대상으로 남겨 두고,
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 STATUS_LABELS = {
     "answered": ("근거를 확인해 답변드렸습니다.", "✅"),
     "abstained": ("답변을 바로 제공하기 어렵습니다.", "⚠️"),
-    "refused": ("이 질문은 전세ON의 답변 범위에 포함되지 않습니다.", "🚫"),
+    "refused": ("이 질문은 LENS의 답변 범위에 포함되지 않습니다.", "🚫"),
 }
 
 STATUS_CLASSES = {
@@ -66,7 +66,7 @@ def load_retrieval_service():
 
 def configure_page() -> None:
     st.set_page_config(
-        page_title="전세ON | 전세계약 법률 챗봇",
+        page_title="LENS | 주택임대차 근거 기반 챗봇",
         page_icon="🏠",
         layout="centered",
         initial_sidebar_state="expanded",
@@ -607,7 +607,7 @@ def render_header() -> None:
     st.markdown(
         """
         <section class="chat-hero">
-          <div class="hero-kicker">전세ON</div>
+          <div class="hero-kicker">LENS</div>
           <h1>안전한 부동산 계약을 위한 <span>챗봇 서비스</span></h1>
           <p>전세계약과 주택임대차에 관한 질문을 입력하면 관련 법령·판례·공식 기관 안내를 찾아<br>
           확인 가능한 근거와 함께 이해하기 쉽게 정리해 드립니다.</p>

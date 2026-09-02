@@ -65,7 +65,7 @@ SemanticJudge = Callable[
 ]
 
 
-SEMANTIC_JUDGE_SYSTEM = """당신은 전세ON의 답변 검증기입니다.
+SEMANTIC_JUDGE_SYSTEM = """당신은 LENS의 답변 검증기입니다.
 
 사용자 질문, 검색 근거, 생성 답변을 비교해 답변을 사용자에게 보내도 되는지
 판정하십시오. 다음 중 하나라도 해당하면 FAIL입니다.
