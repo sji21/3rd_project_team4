@@ -53,7 +53,7 @@ STATUS_CLASSES = {
 }
 
 WELCOME_MESSAGE = (
-    "안녕하세요. 전세계약 과정에서 궁금한 권리나 절차를 질문해 주세요. "
+    "안녕하세요. 부동산 계약 과정에서 궁금한 권리나 절차를 질문해 주세요.\n\n"
     "확인 가능한 근거와 함께 안내해 드릴게요."
 )
 
@@ -125,6 +125,16 @@ def configure_page() -> None:
 
         [data-testid="stHeader"] {
             background: transparent;
+            pointer-events: none;
+        }
+
+        [data-testid="stToolbar"] {
+            pointer-events: none;
+        }
+
+        [data-testid="stToolbar"] button,
+        [data-testid="stToolbar"] [role="button"] {
+            pointer-events: auto;
         }
 
         #MainMenu,
@@ -273,64 +283,84 @@ def configure_page() -> None:
         }
 
         /* Header */
-        .chat-hero {
+        .st-key-retrieval_readiness_area {
+            margin-bottom: .45rem;
+        }
+
+        .st-key-retrieval_readiness_area [data-testid="stStatusWidget"] {
+            border-radius: 12px;
+        }
+
+        .st-key-intro_card {
             position: relative;
             overflow: hidden;
-            padding: 1.65rem 1.75rem 1.55rem;
+            padding: 1.15rem 1.35rem 1.2rem;
             border: 1px solid #D7E7F3;
             border-radius: 22px;
             background:
                 linear-gradient(120deg, rgba(255,255,255,.98) 0%, rgba(238,248,255,.98) 100%);
             box-shadow: 0 14px 34px rgba(31, 76, 110, .08);
-            margin-bottom: 1.15rem;
-        }
-
-        .chat-hero::after {
-            content: "";
-            position: absolute;
-            width: 190px;
-            height: 190px;
-            border-radius: 50%;
-            right: -65px;
-            top: -90px;
-            background: rgba(45, 139, 202, .10);
-        }
-
-        .hero-kicker {
-            display: inline-flex;
-            align-items: center;
-            gap: .45rem;
-            border: 1px solid #CDE4F4;
-            background: rgba(255,255,255,.78);
-            border-radius: 999px;
-            padding: .3rem .62rem;
-            color: #276C9C;
-            font-size: .75rem;
-            font-weight: 750;
             margin-bottom: .75rem;
         }
 
-        .chat-hero h1 {
-            position: relative;
-            z-index: 1;
-            color: var(--jeonse-ink);
-            margin: 0 0 .45rem;
-            font-size: 2rem;
-            line-height: 1.25;
-            letter-spacing: -.045em;
+        .st-key-intro_card::after {
+            content: "";
+            position: absolute;
+            width: 170px;
+            height: 170px;
+            border-radius: 50%;
+            right: -65px;
+            top: -105px;
+            background: rgba(45, 139, 202, .10);
+            pointer-events: none;
         }
 
-        .chat-hero h1 span {
+        .st-key-intro_card_header {
+            position: relative;
+            z-index: 2;
+        }
+
+        .st-key-intro_card:has(.hero-copy) .st-key-intro_card_header {
+            margin-bottom: 1.1rem;
+        }
+
+        .hero-title {
+            color: var(--jeonse-ink);
+            font-size: 1.55rem;
+            line-height: 1.3;
+            letter-spacing: -.035em;
+            font-weight: 850;
+            white-space: nowrap;
+            word-break: keep-all;
+        }
+
+        .hero-title span {
             color: var(--jeonse-blue);
         }
 
-        .chat-hero p {
+        .st-key-intro_toggle button {
+            min-height: 36px;
+            padding: .35rem .55rem;
+            color: #466274;
+            font-weight: 700;
+        }
+
+        .hero-copy {
             position: relative;
             z-index: 1;
             color: #586C7E;
             margin: 0;
-            line-height: 1.6;
-            font-size: .93rem;
+            line-height: 1.65;
+            font-size: .88rem;
+            max-width: 46rem;
+        }
+
+        .hero-copy-line {
+            display: block;
+        }
+
+        .hero-copy-line + .hero-copy-line {
+            margin-top: .22rem;
         }
 
         .hero-meta {
@@ -339,7 +369,7 @@ def configure_page() -> None:
             display: flex;
             flex-wrap: wrap;
             gap: .45rem;
-            margin-top: 1rem;
+            margin-top: .9rem;
         }
 
         .hero-meta span {
@@ -477,16 +507,17 @@ def configure_page() -> None:
                 padding: 1rem .85rem 7rem;
             }
 
-            .chat-hero {
-                padding: 1.25rem 1.15rem;
+            .st-key-intro_card {
+                padding: .9rem 1rem 1rem;
                 border-radius: 18px;
             }
 
-            .chat-hero h1 {
-                font-size: 1.6rem;
+            .hero-title {
+                font-size: 1.15rem;
+                white-space: normal;
             }
 
-            .chat-hero p br {
+            .hero-copy br {
                 display: none;
             }
 
@@ -510,6 +541,12 @@ def configure_page() -> None:
                 min-height: calc(100vh - 330px);
             }
         }
+
+        @media (max-width: 900px) {
+            [data-testid="stAppDeployButton"] {
+                display: none;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -517,6 +554,8 @@ def configure_page() -> None:
 
 
 def init_chat_state() -> None:
+    st.session_state.setdefault("intro_expanded", True)
+
     if "chat_messages" not in st.session_state:
         st.session_state["chat_messages"] = [
             {
@@ -636,23 +675,75 @@ def render_document_manager() -> None:
             )
 
 
+def toggle_intro_card() -> None:
+    st.session_state["intro_expanded"] = not st.session_state["intro_expanded"]
+
+
+@st.fragment
 def render_header() -> None:
+    expanded = st.session_state["intro_expanded"]
+    toggle_label = "접기" if expanded else "펼치기"
+    toggle_icon = ":material/keyboard_arrow_up:" if expanded else ":material/keyboard_arrow_down:"
+
+    # 소개 카드 높이에 맞춰 첫 화면의 채팅 영역을 조정한다. 입력창은 Streamlit이
+    # 화면 하단에 고정하므로 카드와 첫 메시지가 같은 뷰포트 안에 남는다.
+    desktop_offset = 500 if expanded else 340
+    mobile_offset = 630 if expanded else 405
     st.markdown(
-        """
-        <section class="chat-hero">
-          <div class="hero-kicker">전세ON</div>
-          <h1>안전한 부동산 계약을 위한 <span>챗봇 서비스</span></h1>
-          <p>전세계약과 주택임대차에 관한 질문을 입력하면 관련 법령·판례·공식 기관 안내를 찾아<br>
-          확인 가능한 근거와 함께 이해하기 쉽게 정리해 드립니다.</p>
-          <div class="hero-meta">
-            <span>출처와 함께 답변</span>
-            <span>후속 질문 맥락 반영</span>
-            <span>근거 부족 시 답변 보류</span>
-          </div>
-        </section>
+        f"""
+        <style>
+        .st-key-chat_area {{
+            min-height: max(9rem, calc(100vh - {desktop_offset}px));
+        }}
+        @media (max-width: 640px) {{
+            .st-key-chat_area {{
+                min-height: max(8rem, calc(100vh - {mobile_offset}px));
+            }}
+        }}
+        </style>
         """,
         unsafe_allow_html=True,
     )
+
+    with st.container(key="intro_card", gap=None):
+        with st.container(
+            key="intro_card_header",
+            horizontal=True,
+            wrap=False,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+            gap="small",
+        ):
+            st.markdown(
+                '<div class="hero-title">안전한 부동산 계약을 위한 '
+                '<span>챗봇 서비스</span></div>',
+                unsafe_allow_html=True,
+            )
+            st.button(
+                toggle_label,
+                key="intro_toggle",
+                type="tertiary",
+                icon=toggle_icon,
+                icon_position="right",
+                help=f"서비스 소개 {toggle_label}",
+                on_click=toggle_intro_card,
+            )
+
+        if expanded:
+            st.markdown(
+                """
+                <p class="hero-copy">
+                  <span class="hero-copy-line">전세계약과 주택임대차에 관한 질문을 입력하면</span>
+                  <span class="hero-copy-line">관련 법령·판례·공식 기관 안내를 찾아, 확인 가능한 근거와 함께 이해하기 쉽게 정리해 드립니다.</span>
+                </p>
+                <div class="hero-meta">
+                  <span>출처와 함께 답변</span>
+                  <span>후속 질문 맥락 반영</span>
+                  <span>근거 부족 시 답변 보류</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 def visible_answer_text(answer: Answer) -> str:
@@ -945,10 +1036,10 @@ def process_question(question: str, uploaded_files=(), retrieval_loader=None) ->
 def main() -> None:
     configure_page()
     init_chat_state()
+    readiness_area = st.container(key="retrieval_readiness_area")
     render_header()
     render_document_manager()
 
-    readiness_area = st.container()
     chat_area = st.container(key="chat_area")
     with chat_area:
         render_history()

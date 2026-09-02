@@ -52,6 +52,49 @@ def test_header_uses_project_title_and_quick_questions_are_removed():
     assert "이런 질문을 해보세요" not in TEXT
 
 
+def test_intro_card_is_collapsible_and_model_status_precedes_it():
+    assert 'st.session_state.setdefault("intro_expanded", True)' in TEXT
+    assert "def toggle_intro_card()" in TEXT
+    assert "@st.fragment\ndef render_header()" in TEXT
+    assert 'key="intro_card"' in TEXT
+    assert 'key="intro_toggle"' in TEXT
+    assert 'toggle_label = "접기" if expanded else "펼치기"' in TEXT
+
+    main_body = TEXT.split("def main() -> None:", 1)[1]
+    readiness_pos = main_body.index(
+        'readiness_area = st.container(key="retrieval_readiness_area")'
+    )
+    header_pos = main_body.index("render_header()")
+    assert readiness_pos < header_pos
+
+
+def test_intro_card_height_changes_chat_viewport_without_covering_input():
+    assert "desktop_offset = 500 if expanded else 340" in TEXT
+    assert "mobile_offset = 630 if expanded else 405" in TEXT
+    assert "min-height: max(9rem, calc(100vh - {desktop_offset}px))" in TEXT
+    assert 'submit_mode="disable"' in TEXT
+
+
+def test_intro_card_spacing_and_toolbar_overlap_are_hardened():
+    assert ".st-key-intro_card:has(.hero-copy) .st-key-intro_card_header" in TEXT
+    assert "margin-bottom: 1.1rem" in TEXT
+    assert "margin: 0" in TEXT
+    assert "margin-top: .9rem" in TEXT
+    assert '[data-testid="stHeader"] {' in TEXT
+    assert "pointer-events: none" in TEXT
+    assert '@media (max-width: 900px)' in TEXT
+    assert '[data-testid="stAppDeployButton"]' in TEXT
+    assert "display: none" in TEXT
+    assert ".hero-copy-line" in TEXT
+    assert "display: block" in TEXT
+    assert "max-width: 46rem" in TEXT
+
+
+def test_welcome_message_uses_two_readable_paragraphs():
+    assert "질문해 주세요.\\n\\n" in TEXT
+    assert '"확인 가능한 근거와 함께 안내해 드릴게요."' in TEXT
+
+
 def test_chat_area_is_bottom_aligned_above_input():
     assert 'st.container(key="chat_area")' in TEXT
     assert ".st-key-chat_area" in TEXT
