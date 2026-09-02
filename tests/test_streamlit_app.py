@@ -79,6 +79,29 @@ def test_initial_screen_is_chat_first_without_quick_questions(monkeypatch) -> No
     assert "🗑️ 대화 내용 지우기" not in [button.label for button in app.button]
 
 
+def test_intro_card_starts_expanded_and_keeps_collapsed_state(monkeypatch) -> None:
+    app = load_app(monkeypatch)
+
+    assert any(button.label == "접기" for button in app.button)
+    assert any(
+        "전세계약과 주택임대차에 관한 질문" in markdown.value
+        for markdown in app.markdown
+    )
+
+    next(button for button in app.button if button.label == "접기").click()
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert any(button.label == "펼치기" for button in app.button)
+    assert not any(
+        "전세계약과 주택임대차에 관한 질문" in markdown.value
+        for markdown in app.markdown
+    )
+
+    app.run(timeout=20)
+    assert any(button.label == "펼치기" for button in app.button)
+
+
 def test_chat_input_runs_the_existing_answer_chain(monkeypatch) -> None:
     app = load_app(monkeypatch)
     app.chat_input[0].set_value(

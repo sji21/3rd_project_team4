@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-09-02
+
+### Fixed (Bug Fixes)
+
+- PATCH-042 keeps the expanded service-introduction card and chat input visible together on the initial Streamlit viewport. The model-readiness status now sits above the card, and an accessible collapse/expand control preserves its state for the browser session while resizing the chat area. The introduction reruns independently, uses clearer title-to-copy spacing, and prevents the fixed Streamlit toolbar and constrained-width Deploy control from blocking the toggle. (commit: `8c7ca3e`)
+
+### Changed
+
+- PATCH-039 renders the Streamlit chat history and input before starting KURE-v1 initialization. A cached single-flight background loader reports readiness in an independently refreshing fragment, shares the same initialization with early questions, and permits retry only after a failed load. SentenceTransformer now tries the local model cache first and contacts Hugging Face only when the cache is absent, avoiding long offline metadata retries. (commit: `0ca21ad`)
+
 ## 2026-09-01
 
 ### Added
