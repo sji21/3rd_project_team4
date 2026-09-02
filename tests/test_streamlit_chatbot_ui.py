@@ -42,7 +42,11 @@ def test_upload_question_is_queued_before_ocr_and_tracks_each_file():
     assert 'item["status"] = "completed"' in TEXT
     assert '"needs_confirmation" if needs_confirmation else "failed"' in TEXT
     assert 'with st.status("첨부 문서 OCR 준비 중..."' in TEXT
-    assert 'disabled=bool(st.session_state.get("active_upload_job_id"))' in TEXT
+    assert "def reconcile_upload_job_state()" in TEXT
+    assert "upload_in_progress = reconcile_upload_job_state()" in TEXT
+    assert "disabled=upload_in_progress" in TEXT
+    assert "def _finish_upload_job(" in TEXT
+    assert "finally:" in TEXT
 
     main_body = TEXT.split("def main() -> None:", 1)[1]
     queue_pos = main_body.index("_queue_upload_job(question, uploaded_files)")
