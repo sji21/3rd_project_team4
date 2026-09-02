@@ -4,7 +4,7 @@
 
 ### Fixed (Bug Fixes)
 
-- PATCH-047 corrects PATCH-005's completion record: the completed checkbox now matches its existing status and implementation commit, while the unverifiable completion date is explicitly marked as unknown instead of being inferred. (commit: pending)
+- PATCH-047 corrects PATCH-005's completion record: the completed checkbox now matches its existing status and implementation commit, while the unverifiable completion date is explicitly marked as unknown instead of being inferred. (commit: `8dc20d8`)
 - PATCH-046 replaces the in-progress timer with the completed response inside one stable answer slot, removes completion-only full reruns, and stops the one-second model-readiness fragment after loading finishes. Upload attachment status is updated through its reserved slot, while `submit_mode="disable"` controls input availability during execution. The original page-level conversation scroll remains intact without a nested chat scrollbar. (commit: `c4f0767`)
 - PATCH-045 stores completed answers and upload notices in session history before a clean rerun, so the canonical history renderer is the only path that draws final answer metadata. This prevents Streamlit stale elements from leaving a faded duplicate status badge and elapsed time after answer completion or subsequent reruns. (commit: `48a9174`)
 - PATCH-044 reconciles orphaned or terminal upload jobs before rendering the Streamlit chat input and clears active upload state in every upload-processing exit path, preventing the input from remaining disabled after a response or failure. Regression coverage includes normal answers, OCR success and failure, missing jobs, terminal jobs, and unexpected upload exceptions. (commit: `a7daf82`)
