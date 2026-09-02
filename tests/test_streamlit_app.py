@@ -243,6 +243,10 @@ def test_slow_ocr_keeps_one_visible_user_message_and_runs_once(monkeypatch) -> N
     assert app.session_state["active_upload_job_id"] is None
     assert app.session_state["upload_jobs"] == {}
     assert not app.chat_input[0].disabled
+    assert any(
+        "lease.png · 완료" in caption.value
+        for caption in app.caption
+    )
 
     # 완료 후 일반 rerun에서도 같은 파일의 OCR과 사용자 메시지가 중복되지 않는다.
     app.run(timeout=20)
