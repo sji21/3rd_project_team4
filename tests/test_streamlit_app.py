@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 from streamlit.testing.v1 import AppTest
+
+from src.document_check.extraction_models import ExtractionResult, PageExtraction
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py"
@@ -111,3 +114,134 @@ def test_chat_input_runs_the_existing_answer_chain(monkeypatch) -> None:
 
     assert not app.exception
     assert any("테스트 답변입니다." in markdown.value for markdown in app.markdown)
+
+
+def _seed_active_upload_job(app: AppTest, *, question: str) -> None:
+    previous_messages = list(app.session_state["chat_messages"])
+    message_id = "upload-test-job"
+    app.session_state["chat_messages"].append(
+        {
+            "message_id": message_id,
+            "role": "user",
+            "content": question,
+            "status": None,
+            "sources": [],
+            "context_content": question,
+            "attachments": [
+                {"name": "lease.png", "status": "queued", "error": None}
+            ],
+        }
+    )
+    app.session_state["upload_jobs"] = {
+        "test-job": {
+            "job_id": "test-job",
+            "message_id": message_id,
+            "question": question,
+            "files": [
+                {
+                    "name": "lease.png",
+                    "data": b"image-data",
+                    "kind": "contract",
+                    "status": "queued",
+                    "error": None,
+                }
+            ],
+            "previous_messages": previous_messages,
+            "status": "queued",
+        }
+    }
+    app.session_state["active_upload_job_id"] = "test-job"
+
+
+def test_slow_ocr_keeps_one_visible_user_message_and_runs_once(monkeypatch) -> None:
+    from src.contract_check import service as contract_service
+
+    calls: list[str] = []
+
+    def slow_analysis(filename: str, _data: bytes):
+        calls.append(filename)
+        time.sleep(0.05)
+        extraction = ExtractionResult(
+            pages=(
+                PageExtraction(
+                    page_number=1,
+                    text="임대인 임차인 보증금 특약",
+                    method="tesseract",
+                    character_count=16,
+                ),
+            ),
+            elapsed_seconds=0.05,
+        )
+        return SimpleNamespace(extraction=extraction)
+
+    monkeypatch.setattr(
+        contract_service,
+        "analyze_contract_document",
+        slow_analysis,
+    )
+    app = load_app(monkeypatch)
+    question = "첨부한 계약서에서 확인할 점을 알려줘"
+    _seed_active_upload_job(app, question=question)
+
+    # 느린 OCR을 시작하기 전 질문과 파일명이 이미 대화 상태에 저장돼 있다.
+    assert sum(
+        message.get("message_id") == "upload-test-job"
+        for message in app.session_state["chat_messages"]
+    ) == 1
+    assert app.session_state["chat_messages"][-1]["attachments"][0]["status"] == "queued"
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert calls == ["lease.png"]
+    user_messages = [
+        message
+        for message in app.session_state["chat_messages"]
+        if message.get("message_id") == "upload-test-job"
+    ]
+    assert len(user_messages) == 1
+    assert user_messages[0]["content"] == question
+    assert user_messages[0]["attachments"] == [
+        {"name": "lease.png", "status": "completed", "error": None}
+    ]
+    assert app.session_state["active_upload_job_id"] is None
+    assert app.session_state["upload_jobs"] == {}
+
+    # 완료 후 일반 rerun에서도 같은 파일의 OCR과 사용자 메시지가 중복되지 않는다.
+    app.run(timeout=20)
+    assert calls == ["lease.png"]
+    assert sum(
+        message.get("message_id") == "upload-test-job"
+        for message in app.session_state["chat_messages"]
+    ) == 1
+
+
+def test_ocr_failure_keeps_question_filename_and_error(monkeypatch) -> None:
+    from src.contract_check import service as contract_service
+
+    def failed_analysis(_filename: str, _data: bytes):
+        raise RuntimeError("test OCR failure")
+
+    monkeypatch.setattr(
+        contract_service,
+        "analyze_contract_document",
+        failed_analysis,
+    )
+    app = load_app(monkeypatch)
+    question = "이 계약서가 잘 보이는지 확인해줘"
+    _seed_active_upload_job(app, question=question)
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    user_message = next(
+        message
+        for message in app.session_state["chat_messages"]
+        if message.get("message_id") == "upload-test-job"
+    )
+    assert user_message["content"] == question
+    assert user_message["attachments"][0]["name"] == "lease.png"
+    assert user_message["attachments"][0]["status"] == "failed"
+    assert "문서를 분석하지 못했습니다" in user_message["attachments"][0]["error"]
+    assert app.session_state["active_upload_job_id"] is None
+    assert app.session_state["upload_jobs"] == {}

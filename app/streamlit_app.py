@@ -571,6 +571,10 @@ def init_chat_state() -> None:
         st.session_state["session_document_id"] = uuid4().hex
     if "session_documents" not in st.session_state:
         st.session_state["session_documents"] = {}
+    if "upload_jobs" not in st.session_state:
+        st.session_state["upload_jobs"] = {}
+    if "active_upload_job_id" not in st.session_state:
+        st.session_state["active_upload_job_id"] = None
 
 
 def clear_chat() -> None:
@@ -583,6 +587,8 @@ def clear_chat() -> None:
             "context_content": "",
         }
     ]
+    st.session_state["upload_jobs"] = {}
+    st.session_state["active_upload_job_id"] = None
 
 
 def _document_id(kind: str, data: bytes) -> str:
@@ -595,29 +601,28 @@ def _document_label(kind: str) -> str:
     return "등기부등본" if kind == "registry" else "임대차계약서"
 
 
-def _infer_document_kind(uploaded_file, question: str) -> str:
+def _infer_document_kind(filename: str, question: str) -> str:
     """별도 선택창 없이 파일명·동반 질문에서 등기부 여부를 판단한다."""
 
-    hint = f"{uploaded_file.name} {question}".replace(" ", "")
+    hint = f"{filename} {question}".replace(" ", "")
     return "registry" if any(token in hint for token in ("등기부", "등기사항")) else "contract"
 
 
-def _add_uploaded_document(uploaded_file, kind: str) -> str | None:
-    data = uploaded_file.getvalue()
+def _add_uploaded_document(filename: str, data: bytes, kind: str) -> str | None:
     document_id = _document_id(kind, data)
     documents = st.session_state["session_documents"]
     if document_id in documents:
         return None
 
     if kind == "registry":
-        if not uploaded_file.name.lower().endswith(".pdf"):
+        if not filename.lower().endswith(".pdf"):
             return "등기부등본은 PDF 파일만 추가할 수 있습니다."
-        analysis = analyze_registry_pdf(uploaded_file.name, data)
+        analysis = analyze_registry_pdf(filename, data)
     else:
-        analysis = analyze_contract_document(uploaded_file.name, data)
+        analysis = analyze_contract_document(filename, data)
 
     context = build_session_document_context(
-        uploaded_file.name,
+        filename,
         analysis.extraction,
         st.session_state["session_document_id"],
         document_id=document_id,
@@ -627,7 +632,7 @@ def _add_uploaded_document(uploaded_file, kind: str) -> str | None:
         "document_id": document_id,
         "kind": kind,
         "label": _document_label(kind),
-        "filename": uploaded_file.name,
+        "filename": filename,
         "page_count": analysis.extraction.page_count,
         "analysis": analysis,
         "context": context,
@@ -862,6 +867,22 @@ def render_assistant_meta(message: dict) -> None:
     render_sources(message.get("sources", []))
 
 
+def render_user_attachments(message: dict) -> None:
+    """업로드 파일별 OCR 상태와 오류를 사용자 메시지 아래에 표시한다."""
+
+    status_labels = {
+        "queued": "대기",
+        "processing": "OCR 처리 중",
+        "completed": "완료",
+        "failed": "실패",
+    }
+    for attachment in message.get("attachments", ()):
+        status = status_labels.get(attachment.get("status"), "대기")
+        st.caption(f"첨부 · {attachment['name']} · {status}")
+        if attachment.get("error"):
+            st.warning(attachment["error"])
+
+
 def render_history() -> None:
     for message in st.session_state["chat_messages"]:
         avatar = "🏠" if message["role"] == "assistant" else "👤"
@@ -869,6 +890,8 @@ def render_history() -> None:
             st.markdown(message["content"])
             if message["role"] == "assistant":
                 render_assistant_meta(message)
+            else:
+                render_user_attachments(message)
 
 
 def render_live_elapsed_timer() -> None:
@@ -913,67 +936,161 @@ def render_live_elapsed_timer() -> None:
     )
 
 
-def _store_uploaded_documents(uploaded_files, question: str) -> tuple[list[str], list[str]]:
-    added_names: list[str] = []
-    errors: list[str] = []
+def _upload_message(message_id: str) -> dict | None:
+    return next(
+        (
+            message
+            for message in st.session_state["chat_messages"]
+            if message.get("message_id") == message_id
+        ),
+        None,
+    )
+
+
+def _sync_upload_message(upload_job: dict) -> None:
+    message = _upload_message(upload_job["message_id"])
+    if message is None:
+        return
+    message["attachments"] = [
+        {
+            "name": item["name"],
+            "status": item["status"],
+            "error": item.get("error"),
+        }
+        for item in upload_job["files"]
+    ]
+
+
+def _queue_upload_job(question: str, uploaded_files) -> str:
+    """질문과 파일명을 먼저 저장하고 OCR은 다음 rerun에서 수행한다."""
+
+    job_id = uuid4().hex
+    message_id = f"upload-{job_id}"
+    files = []
     for uploaded_file in uploaded_files:
+        filename = uploaded_file.name
         try:
-            error = _add_uploaded_document(
-                uploaded_file,
-                _infer_document_kind(uploaded_file, question),
-            )
+            data = uploaded_file.getvalue()
+            status = "queued"
+            error = None
         except Exception:
-            logger.exception("채팅 첨부 문서 분석 중 오류가 발생했습니다.")
-            error = "문서를 분석하지 못했습니다. 파일 형식과 OCR 상태를 확인해 주세요."
-        if error:
-            errors.append(f"{uploaded_file.name}: {error}")
-        else:
-            added_names.append(uploaded_file.name)
-    return added_names, errors
+            logger.exception("채팅 첨부 파일을 읽는 중 오류가 발생했습니다.")
+            data = b""
+            status = "failed"
+            error = "파일을 읽지 못했습니다. 다시 첨부해 주세요."
+        files.append(
+            {
+                "name": filename,
+                "data": data,
+                "kind": _infer_document_kind(filename, question),
+                "status": status,
+                "error": error,
+            }
+        )
 
-
-def process_question(question: str, uploaded_files=(), retrieval_loader=None) -> None:
-    # 현재 질문을 넣기 전 대화만 후속 질문 해석에 사용한다.
     previous_messages = list(st.session_state["chat_messages"])
-    added_names, upload_errors = _store_uploaded_documents(uploaded_files, question)
     visible_question = question or "문서를 첨부했습니다."
-
     st.session_state["chat_messages"].append(
         {
+            "message_id": message_id,
             "role": "user",
             "content": visible_question,
             "status": None,
             "sources": [],
             "context_content": question,
+            "attachments": [
+                {
+                    "name": item["name"],
+                    "status": item["status"],
+                    "error": item.get("error"),
+                }
+                for item in files
+            ],
+        }
+    )
+    st.session_state["upload_jobs"][job_id] = {
+        "job_id": job_id,
+        "message_id": message_id,
+        "question": question,
+        "files": files,
+        "previous_messages": previous_messages,
+        "status": "queued",
+    }
+    st.session_state["active_upload_job_id"] = job_id
+    return job_id
+
+
+def _store_uploaded_documents(
+    upload_job: dict,
+    upload_status,
+) -> tuple[list[str], list[str]]:
+    """파일별 상태를 저장하면서 세션 문서 OCR을 한 번씩 수행한다."""
+
+    added_names: list[str] = []
+    errors: list[str] = []
+    total = len(upload_job["files"])
+    for index, item in enumerate(upload_job["files"], start=1):
+        if item["status"] in {"completed", "failed"}:
+            if item["status"] == "completed":
+                added_names.append(item["name"])
+            elif item.get("error"):
+                errors.append(f"{item['name']}: {item['error']}")
+            continue
+
+        item["status"] = "processing"
+        upload_job["status"] = "processing"
+        _sync_upload_message(upload_job)
+        upload_status.update(
+            label=f"첨부 문서 OCR 처리 중 ({index}/{total}) · {item['name']}",
+            state="running",
+            expanded=True,
+        )
+        st.write(f"{item['name']} · OCR 처리 중")
+
+        try:
+            error = _add_uploaded_document(
+                item["name"],
+                item["data"],
+                item["kind"],
+            )
+        except Exception:
+            logger.exception("채팅 첨부 문서 분석 중 오류가 발생했습니다.")
+            error = "문서를 분석하지 못했습니다. 파일 형식과 OCR 상태를 확인해 주세요."
+
+        if error:
+            item["status"] = "failed"
+            item["error"] = error
+            errors.append(f"{item['name']}: {error}")
+            st.warning(f"{item['name']} · 실패 · {error}")
+        else:
+            item["status"] = "completed"
+            item["error"] = None
+            added_names.append(item["name"])
+            st.success(f"{item['name']} · 완료")
+        _sync_upload_message(upload_job)
+
+    return added_names, errors
+
+
+def _append_assistant_notice(notice: str) -> None:
+    with st.chat_message("assistant", avatar="🏠"):
+        st.markdown(notice)
+    st.session_state["chat_messages"].append(
+        {
+            "role": "assistant",
+            "content": notice,
+            "status": None,
+            "sources": [],
+            "context_content": "",
         }
     )
 
-    with st.chat_message("user", avatar="👤"):
-        st.markdown(visible_question)
-        if added_names:
-            st.caption("첨부: " + ", ".join(added_names))
-        for error in upload_errors:
-            st.warning(error)
 
-    if not question:
-        notice = (
-            "문서를 현재 세션에 추가했습니다. 이어서 문서에서 확인할 내용을 질문해 주세요."
-            if added_names
-            else "질문이나 첨부 문서를 함께 보내 주세요."
-        )
-        with st.chat_message("assistant", avatar="🏠"):
-            st.markdown(notice)
-        st.session_state["chat_messages"].append(
-            {
-                "role": "assistant",
-                "content": notice,
-                "status": None,
-                "sources": [],
-                "context_content": "",
-            }
-        )
-        return
-
+def _answer_visible_question(
+    question: str,
+    previous_messages: list[dict],
+    retrieval_loader=None,
+) -> None:
     with st.chat_message("assistant", avatar="🏠"):
         started_at = time.perf_counter()
         timer_slot = st.empty()
@@ -1018,9 +1135,19 @@ def process_question(question: str, uploaded_files=(), retrieval_loader=None) ->
             timer_slot.empty()
 
         if answer is None:
-            st.error(
+            error_message = (
                 "답변을 불러오지 못했습니다. "
                 "검색 인덱스와 Ollama 상태를 확인한 뒤 다시 시도해 주세요."
+            )
+            st.error(error_message)
+            st.session_state["chat_messages"].append(
+                {
+                    "role": "assistant",
+                    "content": error_message,
+                    "status": None,
+                    "sources": [],
+                    "context_content": "",
+                }
             )
         else:
             st.markdown(visible_answer_text(answer))
@@ -1031,6 +1158,77 @@ def process_question(question: str, uploaded_files=(), retrieval_loader=None) ->
             )
             render_assistant_meta(assistant_message)
             st.session_state["chat_messages"].append(assistant_message)
+
+
+def process_question(question: str, retrieval_loader=None) -> None:
+    """첨부 파일이 없는 일반 질문을 기존 RAG 흐름으로 처리한다."""
+
+    previous_messages = list(st.session_state["chat_messages"])
+    st.session_state["chat_messages"].append(
+        {
+            "role": "user",
+            "content": question,
+            "status": None,
+            "sources": [],
+            "context_content": question,
+        }
+    )
+    with st.chat_message("user", avatar="👤"):
+        st.markdown(question)
+    _answer_visible_question(question, previous_messages, retrieval_loader)
+
+
+def process_active_upload_job(retrieval_loader=None) -> None:
+    """화면에 먼저 표시된 활성 업로드 작업을 이어서 처리한다."""
+
+    job_id = st.session_state.get("active_upload_job_id")
+    upload_job = st.session_state["upload_jobs"].get(job_id)
+    if upload_job is None:
+        st.session_state["active_upload_job_id"] = None
+        return
+
+    with st.status("첨부 문서 OCR 준비 중...", expanded=True) as upload_status:
+        added_names, upload_errors = _store_uploaded_documents(
+            upload_job,
+            upload_status,
+        )
+        if upload_errors:
+            upload_status.update(
+                label=(
+                    "첨부 문서 OCR 완료 · 일부 파일을 처리하지 못했습니다."
+                    if added_names
+                    else "첨부 문서 OCR 실패"
+                ),
+                state="error",
+                expanded=True,
+            )
+        else:
+            upload_status.update(
+                label="첨부 문서 OCR 완료",
+                state="complete",
+                expanded=False,
+            )
+
+    question = upload_job["question"]
+    if not question:
+        notice = (
+            "문서를 현재 세션에 추가했습니다. 이어서 문서에서 확인할 내용을 질문해 주세요."
+            if added_names
+            else "문서를 추가하지 못했습니다. 파일 상태를 확인한 뒤 다시 첨부해 주세요."
+        )
+        _append_assistant_notice(notice)
+    else:
+        _answer_visible_question(
+            question,
+            upload_job["previous_messages"],
+            retrieval_loader,
+        )
+
+    upload_job["status"] = "completed"
+    _sync_upload_message(upload_job)
+    st.session_state["active_upload_job_id"] = None
+    st.session_state["upload_jobs"].pop(job_id, None)
+    st.rerun()
 
 
 def main() -> None:
@@ -1048,6 +1246,7 @@ def main() -> None:
         "예: 전입신고 효력은? · 파일을 함께 첨부해 문서 내용을 질문할 수 있어요.",
         accept_file="multiple",
         file_type=("pdf", "jpg", "jpeg", "png"),
+        disabled=bool(st.session_state.get("active_upload_job_id")),
         submit_mode="disable",
     )
 
@@ -1057,13 +1256,22 @@ def main() -> None:
     with readiness_area:
         render_retrieval_readiness(retrieval_loader)
 
+    if st.session_state.get("active_upload_job_id"):
+        with chat_area:
+            process_active_upload_job(retrieval_loader)
+        return
+
     if submission:
         question = (getattr(submission, "text", submission) or "").strip()
         uploaded_files = tuple(getattr(submission, "files", ()) or ())
         if not question and not uploaded_files:
             return
-        with chat_area:
-            process_question(question, uploaded_files, retrieval_loader)
+        if uploaded_files:
+            _queue_upload_job(question, uploaded_files)
+            st.rerun()
+        else:
+            with chat_area:
+                process_question(question, retrieval_loader)
 
 
 if __name__ == "__main__":
