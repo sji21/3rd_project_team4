@@ -225,14 +225,19 @@ _VALIDATION_FAILED_TEXT = (
 )
 
 _NO_DOCUMENT_AND_OFFICIAL_EVIDENCE_TEXT = (
-    "업로드 문서에서 질문과 관련된 내용을 찾지 못했고, 공식 자료에서도 답변 근거를 찾지 못했습니다. "
-    "문서명·항목명·쪽수를 포함해 다시 질문해 주세요."
+    "첨부 문서 OCR에서 질문과 관련된 내용을 확인하지 못했습니다. "
+    "필요한 페이지가 흐리거나 판독되지 않았을 수 있으니 더 선명한 파일로 다시 첨부하거나 "
+    "문서명·항목명·쪽수를 포함해 질문해 주세요."
 )
 
 _DOCUMENT_FACT_TERMS = (
     "업로드문서",
+    "첨부문서",
+    "이문서",
+    "해당문서",
     "계약서",
     "등기부",
+    "등본",
     "등기사항",
     "특약",
     "보증금",
@@ -510,8 +515,9 @@ def answer_question(
         return _refused_answer(safe_question, "custom_scope")
 
     # 명백한 임대차 질문은 scope Qwen을 생략한다. 범위가 애매하거나
-    # 임대차 도메인 신호가 없는 경우에만 semantic judge를 호출한다.
-    if scope.needs_semantic_review:
+    # 임대차 도메인 신호가 없는 경우에만 semantic judge를 호출한다. 다만 호출자가
+    # 이미 세션 문서 참조를 확인한 질의는 OCR 근거를 읽는 요청이므로 재분류하지 않는다.
+    if scope.needs_semantic_review and not document_search_attempted:
         scope = classify_scope(
             safe_question,
             semantic_judge=_scope_judge(get_aux_llm()),
@@ -668,7 +674,7 @@ def answer_document_question(
     # 문서에 적힌 보증금·특약·당사자 등을 그대로 묻는 질문에 무관한 법령 검색을
     # 섞으면 작은 모델이 억지로 법령을 인용하고 semantic judge가 답을 거절한다.
     # 해석·위험 분석 질문은 기존 공식 검색을 유지한다.
-    if document_evidences and _is_document_only_question(question):
+    if not document_evidences or _is_document_only_question(question):
         kwargs.setdefault("k_law", 0)
         kwargs.setdefault("k_case", 0)
         kwargs.setdefault("k_guide", 0)

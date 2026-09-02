@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.document_check.extraction import extract_document_text
+from src.document_check.extraction_models import ExtractionResult
 from src.document_check.privacy import mask_sensitive_text
 
 from .models import ContractAnalysis
@@ -22,6 +23,21 @@ def analyze_contract_document(
     registry_signal_ids: tuple[str, ...] = (),
 ) -> ContractAnalysis:
     extraction = extract_document_text(filename, data)
+    return analyze_contract_extraction(
+        filename,
+        extraction,
+        registry_signal_ids=registry_signal_ids,
+    )
+
+
+def analyze_contract_extraction(
+    filename: str,
+    extraction: ExtractionResult,
+    *,
+    registry_signal_ids: tuple[str, ...] = (),
+) -> ContractAnalysis:
+    """이미 추출한 OCR 결과를 재사용해 계약서 항목과 특약을 점검한다."""
+
     readable = bool(extraction.text.strip()) and extraction.unreadable_page_count < extraction.page_count
     contract_like = readable and looks_like_contract(extraction.pages)
 

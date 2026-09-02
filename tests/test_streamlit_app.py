@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 from streamlit.testing.v1 import AppTest
 
@@ -128,7 +128,14 @@ def _seed_active_upload_job(app: AppTest, *, question: str) -> None:
             "sources": [],
             "context_content": question,
             "attachments": [
-                {"name": "lease.png", "status": "queued", "error": None}
+                {
+                    "name": "lease.png",
+                    "status": "queued",
+                    "error": None,
+                    "label": None,
+                    "confidence": None,
+                    "reason": None,
+                }
             ],
         }
     )
@@ -141,9 +148,11 @@ def _seed_active_upload_job(app: AppTest, *, question: str) -> None:
                 {
                     "name": "lease.png",
                     "data": b"image-data",
-                    "kind": "contract",
                     "status": "queued",
                     "error": None,
+                    "label": None,
+                    "confidence": None,
+                    "reason": None,
                 }
             ],
             "previous_messages": previous_messages,
@@ -154,30 +163,29 @@ def _seed_active_upload_job(app: AppTest, *, question: str) -> None:
 
 
 def test_slow_ocr_keeps_one_visible_user_message_and_runs_once(monkeypatch) -> None:
-    from src.contract_check import service as contract_service
+    from src.document_check import upload_analysis
 
     calls: list[str] = []
 
-    def slow_analysis(filename: str, _data: bytes):
+    def slow_extraction(filename: str, _data: bytes):
         calls.append(filename)
         time.sleep(0.05)
-        extraction = ExtractionResult(
+        return ExtractionResult(
             pages=(
                 PageExtraction(
                     page_number=1,
-                    text="임대인 임차인 보증금 특약",
+                    text="주택 임대차계약서 임대인 임차인 보증금 차임 임대차기간 특약사항",
                     method="tesseract",
-                    character_count=16,
+                    character_count=38,
                 ),
             ),
             elapsed_seconds=0.05,
         )
-        return SimpleNamespace(extraction=extraction)
 
     monkeypatch.setattr(
-        contract_service,
-        "analyze_contract_document",
-        slow_analysis,
+        upload_analysis,
+        "extract_document_text",
+        slow_extraction,
     )
     app = load_app(monkeypatch)
     question = "첨부한 계약서에서 확인할 점을 알려줘"
@@ -202,7 +210,17 @@ def test_slow_ocr_keeps_one_visible_user_message_and_runs_once(monkeypatch) -> N
     assert len(user_messages) == 1
     assert user_messages[0]["content"] == question
     assert user_messages[0]["attachments"] == [
-        {"name": "lease.png", "status": "completed", "error": None}
+        {
+            "name": "lease.png",
+            "status": "completed",
+            "error": None,
+            "label": "임대차계약서",
+            "confidence": "high",
+            "reason": (
+                "OCR에서 주택 임대차계약서, 임대차계약서, 임대인, 임차인 신호를 "
+                "확인해 임대차계약서로 분류했습니다."
+            ),
+        }
     ]
     assert app.session_state["active_upload_job_id"] is None
     assert app.session_state["upload_jobs"] == {}
@@ -217,15 +235,15 @@ def test_slow_ocr_keeps_one_visible_user_message_and_runs_once(monkeypatch) -> N
 
 
 def test_ocr_failure_keeps_question_filename_and_error(monkeypatch) -> None:
-    from src.contract_check import service as contract_service
+    from src.document_check import upload_analysis
 
-    def failed_analysis(_filename: str, _data: bytes):
+    def failed_extraction(_filename: str, _data: bytes):
         raise RuntimeError("test OCR failure")
 
     monkeypatch.setattr(
-        contract_service,
-        "analyze_contract_document",
-        failed_analysis,
+        upload_analysis,
+        "extract_document_text",
+        failed_extraction,
     )
     app = load_app(monkeypatch)
     question = "이 계약서가 잘 보이는지 확인해줘"
@@ -245,3 +263,73 @@ def test_ocr_failure_keeps_question_filename_and_error(monkeypatch) -> None:
     assert "문서를 분석하지 못했습니다" in user_message["attachments"][0]["error"]
     assert app.session_state["active_upload_job_id"] is None
     assert app.session_state["upload_jobs"] == {}
+
+
+def test_ambiguous_ocr_requests_confirmation_without_generic_answer(monkeypatch) -> None:
+    from src.document_check import upload_analysis
+
+    monkeypatch.setattr(
+        upload_analysis,
+        "extract_document_text",
+        lambda *_args: ExtractionResult(
+            pages=(
+                PageExtraction(
+                    page_number=1,
+                    text="촬영 상태가 흐려 내용을 구분하기 어렵습니다",
+                    method="tesseract",
+                    character_count=21,
+                ),
+            ),
+            elapsed_seconds=0.1,
+        ),
+    )
+    app = load_app(monkeypatch)
+    _seed_active_upload_job(app, question="이 문서에서 주의할 점을 알려줘")
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    user_message = next(
+        message
+        for message in app.session_state["chat_messages"]
+        if message.get("message_id") == "upload-test-job"
+    )
+    assert user_message["attachments"][0]["status"] == "needs_confirmation"
+    assert user_message["attachments"][0]["label"] == "종류 확인 필요"
+    assert app.session_state["session_documents"] == {}
+    assert any(
+        "문서 종류를 확인" in message.get("content", "")
+        for message in app.session_state["chat_messages"]
+        if message.get("role") == "assistant"
+    )
+
+
+def test_registry_photo_is_classified_from_ocr_and_added_to_session(monkeypatch) -> None:
+    from src.document_check import upload_analysis
+
+    monkeypatch.setattr(
+        upload_analysis,
+        "extract_document_text",
+        lambda *_args: ExtractionResult(
+            pages=(
+                PageExtraction(
+                    page_number=1,
+                    text="등기사항전부증명서 갑구 소유권에 관한 사항 을구 근저당권 채권최고액",
+                    method="tesseract",
+                    character_count=38,
+                ),
+            ),
+            elapsed_seconds=0.1,
+        ),
+    )
+    app = load_app(monkeypatch)
+    _seed_active_upload_job(app, question="첨부한 등본에서 주의할 점을 알려줘")
+
+    app.run(timeout=20)
+
+    assert not app.exception
+    assert len(app.session_state["session_documents"]) == 1
+    document = next(iter(app.session_state["session_documents"].values()))
+    assert document["kind"] == "registry"
+    assert document["label"] == "등기사항증명서"
+    assert document["classification_confidence"] == "high"

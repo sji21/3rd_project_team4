@@ -161,6 +161,29 @@ class AnswerQuestionTests(unittest.TestCase):
         )
         return tuple(SessionDocumentRetriever(context).search("전세대출 특약", k=1))
 
+    @staticmethod
+    def _registry_document_evidence():
+        context = build_session_document_context(
+            "registry.pdf",
+            ExtractionResult(
+                pages=(
+                    PageExtraction(
+                        1,
+                        "갑구에는 가압류가 있고 을구에는 근저당권이 설정되어 있습니다.",
+                        "tesseract",
+                        34,
+                    ),
+                ),
+                elapsed_seconds=0.1,
+            ),
+            "browser-a",
+            document_id="registry-a",
+            document_kind="등기사항증명서",
+        )
+        return tuple(
+            SessionDocumentRetriever(context).search("가압류 근저당권", k=1)
+        )
+
     def test_document_question_keeps_document_and_official_evidence_separate(self) -> None:
         document_evidences = self._document_evidence()
 
@@ -188,6 +211,33 @@ class AnswerQuestionTests(unittest.TestCase):
 
         self.assertEqual("answered", answer.status)
         self.assertFalse(answer.requires_official_citation)
+
+    def test_registry_aliases_skip_generic_scope_judge_after_session_routing(self) -> None:
+        document_evidences = self._registry_document_evidence()
+
+        for question in (
+            "등본 검토해줘",
+            "첨부한 등본 검토해줘",
+            "이 등본에서 주의깊게 봐야할 부분 알려줘",
+        ):
+            with self.subTest(question=question):
+                service = SpyService()
+                answer = answer_document_question(
+                    question,
+                    document_evidences,
+                    service=service,
+                    llm=get_llm(
+                        fake_responses=[
+                            "업로드한 registry.pdf 1쪽에는 가압류와 근저당권 문구가 있습니다."
+                        ]
+                    ),
+                    # 이 응답이 소비되면 일반 scope 판별을 잘못 호출한 것이다.
+                    auxiliary_llm=get_llm(fake_responses=["REFUSE"]),
+                )
+
+                self.assertEqual("answered", answer.status)
+                self.assertEqual(0, service.calls)
+                self.assertTrue(answer.document_evidences)
 
     def test_document_fact_question_skips_unrelated_official_search(self) -> None:
         context = build_session_document_context(
@@ -224,17 +274,19 @@ class AnswerQuestionTests(unittest.TestCase):
         self.assertFalse(answer.evidences)
         self.assertFalse(answer.requires_official_citation)
 
-    def test_document_question_without_any_evidence_explains_both_gaps(self) -> None:
+    def test_document_question_without_ocr_evidence_requests_reupload(self) -> None:
+        service = SpyService()
         answer = answer_document_question(
             "계약서에 없는 항목이 있나요?",
             (),
-            service=RetrievalService([], dense=None),
+            service=service,
             llm=None,
         )
 
         self.assertEqual("abstained", answer.status)
-        self.assertIn("업로드 문서", answer.text)
-        self.assertIn("공식 자료", answer.text)
+        self.assertIn("첨부 문서 OCR", answer.text)
+        self.assertIn("다시 첨부", answer.text)
+        self.assertEqual(0, service.calls)
     def test_answerable_question_uses_evidence_and_appends_disclaimer(self) -> None:
         answer = answer_question(
             QUESTION,

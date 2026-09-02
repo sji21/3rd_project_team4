@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 import unicodedata
 from typing import Literal
@@ -395,6 +395,34 @@ def extract_citation_mentions(
 
 def audit_citations(answer: Answer) -> CitationAudit:
     mentions = extract_citation_mentions(answer.raw_text, answer.evidences)
+    if answer.document_evidences:
+        document_texts = tuple(
+            (evidence.chunk_id, _compact(evidence.text))
+            for evidence in answer.document_evidences
+        )
+        grounded_mentions = []
+        for mention in mentions:
+            if mention.supported:
+                grounded_mentions.append(mention)
+                continue
+
+            target = _compact(mention.text)
+            document_chunk_ids = tuple(
+                chunk_id
+                for chunk_id, text in document_texts
+                if target and target in text
+            )
+            grounded_mentions.append(
+                replace(
+                    mention,
+                    supported=True,
+                    evidence_chunk_ids=document_chunk_ids,
+                )
+                if document_chunk_ids
+                else mention
+            )
+        mentions = tuple(grounded_mentions)
+
     missing_required = (
         answer.status == "answered"
         and bool(answer.raw_text.strip())

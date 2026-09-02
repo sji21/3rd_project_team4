@@ -1,5 +1,6 @@
 import unittest
 
+from src.document_check.session_retrieval import SessionDocumentEvidence
 from src.generation.citation import (
     audit_citations,
     extract_citation_mentions,
@@ -28,6 +29,19 @@ def make_evidence(
 
 
 class CitationTests(unittest.TestCase):
+    @staticmethod
+    def document_evidence(text: str) -> SessionDocumentEvidence:
+        return SessionDocumentEvidence(
+            chunk_id="session:registry:page:1",
+            filename="registry.pdf",
+            page_number=1,
+            extraction_method="tesseract",
+            checksum="checksum",
+            text=text,
+            document_id="registry-a",
+            document_kind="등기사항증명서",
+        )
+
     def test_supports_retrieved_law(self):
         ev = make_evidence(
             chunk_id="law-3",
@@ -424,6 +438,40 @@ class CitationTests(unittest.TestCase):
         )
 
         self.assertTrue(validate_citations(answer))
+
+    def test_accepts_court_case_text_copied_from_uploaded_registry(self):
+        evidence = self.document_evidence(
+            "서울중앙지방법원 2024카단12345 가압류 결정에 따른 가압류 등기"
+        )
+        answer = Answer(
+            question="첨부한 등본 검토해줘",
+            status="answered",
+            text="",
+            raw_text="registry.pdf 1쪽에 서울중앙지방법원 2024카단12345 가압류 결정이 표시되어 있습니다.",
+            document_evidences=(evidence,),
+            requires_official_citation=False,
+        )
+
+        audit = audit_citations(answer)
+
+        self.assertTrue(audit.is_valid)
+        self.assertEqual(
+            audit.mentions[0].evidence_chunk_ids,
+            ("session:registry:page:1",),
+        )
+
+    def test_rejects_case_citation_absent_from_uploaded_registry(self):
+        evidence = self.document_evidence("갑구에 가압류 등기가 표시되어 있습니다.")
+        answer = Answer(
+            question="첨부한 등본 검토해줘",
+            status="answered",
+            text="",
+            raw_text="대법원 2021다12345 판결에 따르면 주의가 필요합니다.",
+            document_evidences=(evidence,),
+            requires_official_citation=False,
+        )
+
+        self.assertFalse(validate_citations(answer))
 
 
 if __name__ == "__main__":
