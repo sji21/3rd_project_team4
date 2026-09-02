@@ -93,6 +93,9 @@ LENS는 전세와 월세 계약을 준비하거나 거주 중인 사용자가 �
 - 답변·보류·거절·OCR 실패 뒤에도 입력창을 다시 활성화해 후속 질문 지원
 - 답변 상태와 응답 시간은 메시지마다 한 번만 표시
 
+초기 검색 모델 준비 방식과 로컬 캐시·중복 적재 방지 검증은
+[`docs/eval-patch039-startup-readiness.md`](docs/eval-patch039-startup-readiness.md)를 참고하세요.
+
 ## 3. 프로그램 동작 구조
 
 ```text
