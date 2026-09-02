@@ -58,11 +58,109 @@ _UPLOADED_DOCUMENT_CUES = (
 )
 
 
-def question_references_uploaded_document(question: str) -> bool:
+_REGISTRY_CUES = (
+    "등기부등본",
+    "등기부",
+    "등기사항증명서",
+    "갑구",
+    "을구",
+    "근저당권",
+)
+
+_CONTRACT_CUES = (
+    "임대차계약서",
+    "계약서",
+    "특약사항",
+)
+
+_GENERIC_REGISTRY_COPY_CUES = (
+    "등본",
+    "이등본",
+    "해당등본",
+    "첨부한등본",
+    "올린등본",
+)
+
+_NON_REGISTRY_COPY_CUES = (
+    "주민등록등본",
+    "가족관계등록부",
+    "가족관계증명서",
+    "법인등기부등본",
+)
+
+_REGISTRY_REVIEW_CUES = (
+    "검토",
+    "주의",
+    "주의깊게",
+    "주의할점",
+    "위험요소",
+    "확인할점",
+    "봐야할부분",
+)
+
+_REGISTRY_REVIEW_QUESTION = "이 등본에서 주의깊게 봐야 할 부분 알려줘"
+
+
+def referenced_document_kind(
+    question: str,
+    available_document_kinds: tuple[str, ...] = (),
+) -> str | None:
+    """질문의 문서 별칭을 세션에 실제 존재하는 종류에 한해 해석한다."""
+
+    compact = "".join((question or "").split())
+    available = set(available_document_kinds)
+
+    if any(cue in compact for cue in _REGISTRY_CUES):
+        return "registry" if not available or "registry" in available else None
+    if any(cue in compact for cue in _CONTRACT_CUES):
+        return "contract" if not available or "contract" in available else None
+    if any(cue in compact for cue in _NON_REGISTRY_COPY_CUES):
+        return None
+    if "registry" in available and any(
+        cue in compact for cue in _GENERIC_REGISTRY_COPY_CUES
+    ):
+        return "registry"
+    return None
+
+
+def question_references_uploaded_document(
+    question: str,
+    available_document_kinds: tuple[str, ...] = (),
+) -> bool:
     """사용자가 현재 세션의 업로드 문서를 명시적으로 가리키는지 판별한다."""
 
     compact = "".join((question or "").split())
+    if any(cue in compact for cue in _NON_REGISTRY_COPY_CUES) and not any(
+        cue in compact for cue in _REGISTRY_CUES
+    ):
+        return False
+    referenced_kind = referenced_document_kind(question, available_document_kinds)
+    if referenced_kind is not None:
+        return True
+    if "등본" in compact:
+        # 종류가 확인되지 않은 단독 별칭을 최근 계약서에 연결하지 않는다.
+        return False
+    if available_document_kinds and (
+        any(cue in compact for cue in _REGISTRY_CUES)
+        or any(cue in compact for cue in _CONTRACT_CUES)
+    ):
+        return False
     return any(cue in compact for cue in _UPLOADED_DOCUMENT_CUES)
+
+
+def normalize_document_review_question(question: str, document_kind: str | None) -> str:
+    """짧은 등기 검토 표현을 검증된 문서 점검 질문으로 정규화한다.
+
+    화면에 표시할 사용자 원문은 변경하지 않고 OCR 검색과 생성에 전달하는 질문만
+    안정화한다. 발급 방법·특정 값 조회처럼 검토 요청이 아닌 질문은 유지한다.
+    """
+
+    compact = "".join((question or "").split())
+    if document_kind == "registry" and any(
+        cue in compact for cue in _REGISTRY_REVIEW_CUES
+    ):
+        return _REGISTRY_REVIEW_QUESTION
+    return question
 
 
 @dataclass(frozen=True)
@@ -249,4 +347,27 @@ class SessionDocumentRetriever:
             )
             for chunk_id, score in self._retriever.search(question, k)
             if (chunk := self._chunks.get(chunk_id)) is not None
+        ]
+
+    def first_pages(self, k: int = 3) -> list[SessionDocumentEvidence]:
+        """요약·위험 점검처럼 검색어가 원문에 없을 때 읽을 수 있는 앞쪽 페이지를 반환한다."""
+
+        if k <= 0:
+            return []
+        return [
+            SessionDocumentEvidence(
+                chunk_id=chunk.chunk_id,
+                filename=chunk.filename,
+                page_number=chunk.page_number,
+                extraction_method=chunk.extraction_method,
+                checksum=chunk.checksum,
+                document_id=chunk.document_id,
+                document_kind=chunk.document_kind,
+                text=chunk.text,
+                score=0.0,
+            )
+            for chunk in sorted(
+                self.context.chunks,
+                key=lambda item: (item.page_number, item.chunk_id),
+            )[:k]
         ]

@@ -1,8 +1,7 @@
 """전세ON 챗봇 UI.
 
-현재 확정된 Generation/Retrieval 경계를 그대로 사용한다.
-OCR·업로드 문서 세션 기억 기능은 후속 연결 대상으로 남겨 두고,
-이 화면에서는 공식 법령·판례·기관 안내 기반 질의응답만 제공한다.
+공식 법령·판례·기관 안내 RAG와 현재 브라우저 세션의 업로드 문서 OCR을
+서로 다른 근거 저장소로 유지하면서 하나의 대화 화면에서 연결한다.
 """
 
 from __future__ import annotations
@@ -23,13 +22,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
-from src.contract_check.service import analyze_contract_document  # noqa: E402
-from src.document_check.service import analyze_registry_pdf  # noqa: E402
 from src.document_check.session_retrieval import (  # noqa: E402
     SessionDocumentRetriever,
     build_session_document_context,
+    normalize_document_review_question,
     question_references_uploaded_document,
+    referenced_document_kind,
 )
+from src.document_check.upload_analysis import analyze_uploaded_document  # noqa: E402
 from src.generation.chain import get_default_service  # noqa: E402
 from src.generation.graph import answer_document_question, answer_question  # noqa: E402
 from src.generation.conversation import resolve_question  # noqa: E402
@@ -598,32 +598,57 @@ def _document_id(kind: str, data: bytes) -> str:
 
 
 def _document_label(kind: str) -> str:
-    return "등기부등본" if kind == "registry" else "임대차계약서"
+    labels = {
+        "registry": "등기사항증명서",
+        "contract": "임대차계약서",
+        "unknown": "종류 확인 필요",
+    }
+    return labels.get(kind, "첨부 문서")
 
 
-def _infer_document_kind(filename: str, question: str) -> str:
-    """별도 선택창 없이 파일명·동반 질문에서 등기부 여부를 판단한다."""
+def _add_uploaded_document(filename: str, data: bytes) -> tuple[str | None, dict]:
+    """OCR을 한 번 수행한 뒤 본문 판별 결과와 같은 추출물을 분석에 재사용한다."""
 
-    hint = f"{filename} {question}".replace(" ", "")
-    return "registry" if any(token in hint for token in ("등기부", "등기사항")) else "contract"
-
-
-def _add_uploaded_document(filename: str, data: bytes, kind: str) -> str | None:
-    document_id = _document_id(kind, data)
     documents = st.session_state["session_documents"]
-    if document_id in documents:
-        return None
+    content_checksum = sha256(data).hexdigest()
+    duplicate = next(
+        (
+            document
+            for document in documents.values()
+            if document.get("content_checksum") == content_checksum
+        ),
+        None,
+    )
+    if duplicate is not None:
+        return None, {
+            "kind": duplicate["kind"],
+            "label": duplicate["label"],
+            "confidence": duplicate.get("classification_confidence", ""),
+            "reason": "이미 현재 세션에 추가된 문서입니다.",
+        }
 
-    if kind == "registry":
-        if not filename.lower().endswith(".pdf"):
-            return "등기부등본은 PDF 파일만 추가할 수 있습니다."
-        analysis = analyze_registry_pdf(filename, data)
-    else:
-        analysis = analyze_contract_document(filename, data)
+    classified = analyze_uploaded_document(filename, data)
+    classification = classified.classification
+    details = {
+        "kind": classification.kind,
+        "label": _document_label(classification.kind),
+        "confidence": classification.confidence,
+        "reason": classification.reason,
+    }
+    if classification.kind == "unknown" or classified.analysis is None:
+        return (
+            "OCR 내용만으로 등기사항증명서인지 임대차계약서인지 구분하지 못했습니다. "
+            "문서 종류를 확인하고 제목과 주요 항목이 선명하게 보이도록 다시 첨부해 주세요.",
+            details,
+        )
+
+    kind = classification.kind
+    analysis = classified.analysis
+    document_id = _document_id(kind, data)
 
     context = build_session_document_context(
         filename,
-        analysis.extraction,
+        classified.extraction,
         st.session_state["session_document_id"],
         document_id=document_id,
         document_kind=_document_label(kind),
@@ -633,11 +658,23 @@ def _add_uploaded_document(filename: str, data: bytes, kind: str) -> str | None:
         "kind": kind,
         "label": _document_label(kind),
         "filename": filename,
-        "page_count": analysis.extraction.page_count,
+        "page_count": classified.extraction.page_count,
         "analysis": analysis,
         "context": context,
+        "content_checksum": content_checksum,
+        "classification_confidence": classification.confidence,
+        "classification_reason": classification.reason,
     }
-    return None
+    return None, details
+
+
+def _available_document_kinds() -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            document["kind"]
+            for document in st.session_state["session_documents"].values()
+        )
+    )
 
 
 def find_document_evidences(question: str):
@@ -648,17 +685,32 @@ def find_document_evidences(question: str):
         return ()
 
     normalized = question.replace(" ", "")
-    selected_kind = None
-    if any(token in normalized for token in ("등기부", "등기사항", "등기")):
-        selected_kind = "registry"
-    elif any(token in normalized for token in ("계약서", "임대차계약")):
-        selected_kind = "contract"
+    selected_kind = referenced_document_kind(question, _available_document_kinds())
+    document_items = list(documents.values())
+    if selected_kind:
+        selected_documents = [
+            document for document in document_items
+            if document["kind"] == selected_kind
+        ]
+    else:
+        # "이 문서"처럼 종류를 말하지 않은 표현은 가장 최근 첨부를 가리킨다.
+        selected_documents = document_items[-1:]
+
+    broad_analysis = any(
+        cue in normalized
+        for cue in ("주의", "위험", "분석", "확인할점", "검토", "요약")
+    )
 
     found = []
-    for document in documents.values():
-        if selected_kind and document["kind"] != selected_kind:
-            continue
-        found.extend(SessionDocumentRetriever(document["context"]).search(question, k=2))
+    for document in selected_documents:
+        retriever = SessionDocumentRetriever(document["context"])
+        search_question = question
+        if broad_analysis and document["kind"] == "registry":
+            search_question += " 갑구 을구 소유권 근저당권 가압류 압류 임차권 경매"
+        elif broad_analysis and document["kind"] == "contract":
+            search_question += " 임대인 임차인 보증금 차임 기간 특약"
+        matches = retriever.search(search_question, k=3)
+        found.extend(matches or retriever.first_pages(k=2))
 
     found.sort(key=lambda evidence: (-evidence.score, evidence.chunk_id))
     return tuple(found[:4])
@@ -676,8 +728,10 @@ def render_document_manager() -> None:
         for document in documents.values():
             st.caption(
                 f"{document['filename']} · {document['label']} · "
-                f"{document['page_count']}쪽"
+                f"{document['page_count']}쪽 · 자동 판별 {document.get('classification_confidence', '-')}"
             )
+            if document.get("classification_reason"):
+                st.caption(f"판별 근거: {document['classification_reason']}")
 
 
 def toggle_intro_card() -> None:
@@ -874,11 +928,17 @@ def render_user_attachments(message: dict) -> None:
         "queued": "대기",
         "processing": "OCR 처리 중",
         "completed": "완료",
+        "needs_confirmation": "문서 종류 확인 필요",
         "failed": "실패",
     }
     for attachment in message.get("attachments", ()):
         status = status_labels.get(attachment.get("status"), "대기")
-        st.caption(f"첨부 · {attachment['name']} · {status}")
+        kind_label = attachment.get("label")
+        confidence = attachment.get("confidence")
+        metadata = ""
+        if kind_label and attachment.get("status") == "completed":
+            metadata = f" · {kind_label} ({confidence})" if confidence else f" · {kind_label}"
+        st.caption(f"첨부 · {attachment['name']} · {status}{metadata}")
         if attachment.get("error"):
             st.warning(attachment["error"])
 
@@ -956,6 +1016,9 @@ def _sync_upload_message(upload_job: dict) -> None:
             "name": item["name"],
             "status": item["status"],
             "error": item.get("error"),
+            "label": item.get("label"),
+            "confidence": item.get("confidence"),
+            "reason": item.get("reason"),
         }
         for item in upload_job["files"]
     ]
@@ -982,9 +1045,11 @@ def _queue_upload_job(question: str, uploaded_files) -> str:
             {
                 "name": filename,
                 "data": data,
-                "kind": _infer_document_kind(filename, question),
                 "status": status,
                 "error": error,
+                "label": None,
+                "confidence": None,
+                "reason": None,
             }
         )
 
@@ -1003,6 +1068,9 @@ def _queue_upload_job(question: str, uploaded_files) -> str:
                     "name": item["name"],
                     "status": item["status"],
                     "error": item.get("error"),
+                    "label": item.get("label"),
+                    "confidence": item.get("confidence"),
+                    "reason": item.get("reason"),
                 }
                 for item in files
             ],
@@ -1023,16 +1091,19 @@ def _queue_upload_job(question: str, uploaded_files) -> str:
 def _store_uploaded_documents(
     upload_job: dict,
     upload_status,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str]]:
     """파일별 상태를 저장하면서 세션 문서 OCR을 한 번씩 수행한다."""
 
     added_names: list[str] = []
     errors: list[str] = []
+    confirmations: list[str] = []
     total = len(upload_job["files"])
     for index, item in enumerate(upload_job["files"], start=1):
-        if item["status"] in {"completed", "failed"}:
+        if item["status"] in {"completed", "needs_confirmation", "failed"}:
             if item["status"] == "completed":
                 added_names.append(item["name"])
+            elif item["status"] == "needs_confirmation" and item.get("error"):
+                confirmations.append(f"{item['name']}: {item['error']}")
             elif item.get("error"):
                 errors.append(f"{item['name']}: {item['error']}")
             continue
@@ -1048,20 +1119,20 @@ def _store_uploaded_documents(
         st.write(f"{item['name']} · OCR 처리 중")
 
         try:
-            error = _add_uploaded_document(
-                item["name"],
-                item["data"],
-                item["kind"],
-            )
+            error, details = _add_uploaded_document(item["name"], item["data"])
+            item.update(details)
         except Exception:
             logger.exception("채팅 첨부 문서 분석 중 오류가 발생했습니다.")
             error = "문서를 분석하지 못했습니다. 파일 형식과 OCR 상태를 확인해 주세요."
+            details = {}
 
         if error:
-            item["status"] = "failed"
+            needs_confirmation = item.get("kind") == "unknown"
+            item["status"] = "needs_confirmation" if needs_confirmation else "failed"
             item["error"] = error
-            errors.append(f"{item['name']}: {error}")
-            st.warning(f"{item['name']} · 실패 · {error}")
+            target = confirmations if needs_confirmation else errors
+            target.append(f"{item['name']}: {error}")
+            st.warning(f"{item['name']} · {error}")
         else:
             item["status"] = "completed"
             item["error"] = None
@@ -1069,7 +1140,7 @@ def _store_uploaded_documents(
             st.success(f"{item['name']} · 완료")
         _sync_upload_message(upload_job)
 
-    return added_names, errors
+    return added_names, errors, confirmations
 
 
 def _append_assistant_notice(notice: str) -> None:
@@ -1108,22 +1179,46 @@ def _answer_visible_question(
             # answer_document_question 이 공식 검색 상한을 0으로 낮춘다.
             use_uploaded_document = (
                 bool(st.session_state["session_documents"])
-                and question_references_uploaded_document(question)
+                and question_references_uploaded_document(
+                    question,
+                    _available_document_kinds(),
+                )
             )
+            answer_question_text = resolved.standalone
+            used_history = resolved.used_history
+            if use_uploaded_document:
+                document_kind = referenced_document_kind(
+                    question,
+                    _available_document_kinds(),
+                )
+                if document_kind is None:
+                    latest_document = next(
+                        reversed(st.session_state["session_documents"].values()),
+                        None,
+                    )
+                    document_kind = (
+                        latest_document["kind"] if latest_document is not None else None
+                    )
+                answer_question_text = normalize_document_review_question(
+                    question,
+                    document_kind,
+                )
+                # 첨부 문서를 직접 가리키는 질문은 이전 채팅 재작성 대신 원문을 쓴다.
+                used_history = False
             document_evidences = (
-                find_document_evidences(resolved.standalone)
+                find_document_evidences(answer_question_text)
                 if use_uploaded_document
                 else ()
             )
             if use_uploaded_document:
                 answer = answer_document_question(
-                    resolved.standalone,
+                    answer_question_text,
                     document_evidences,
                     service=retrieval_service,
                 )
             else:
                 answer = answer_question(
-                    resolved.standalone,
+                    answer_question_text,
                     service=retrieval_service,
                 )
         except Exception:
@@ -1153,7 +1248,7 @@ def _answer_visible_question(
             st.markdown(visible_answer_text(answer))
             assistant_message = answer_to_message(
                 answer,
-                used_history=resolved.used_history,
+                used_history=used_history,
                 elapsed_seconds=elapsed_seconds,
             )
             render_assistant_meta(assistant_message)
@@ -1188,16 +1283,16 @@ def process_active_upload_job(retrieval_loader=None) -> None:
         return
 
     with st.status("첨부 문서 OCR 준비 중...", expanded=True) as upload_status:
-        added_names, upload_errors = _store_uploaded_documents(
+        added_names, upload_errors, confirmation_requests = _store_uploaded_documents(
             upload_job,
             upload_status,
         )
-        if upload_errors:
+        if upload_errors or confirmation_requests:
             upload_status.update(
                 label=(
-                    "첨부 문서 OCR 완료 · 일부 파일을 처리하지 못했습니다."
+                    "첨부 문서 OCR 완료 · 일부 파일을 확인해 주세요."
                     if added_names
-                    else "첨부 문서 OCR 실패"
+                    else "첨부 문서 확인 필요"
                 ),
                 state="error",
                 expanded=True,
@@ -1210,11 +1305,13 @@ def process_active_upload_job(retrieval_loader=None) -> None:
             )
 
     question = upload_job["question"]
-    if not question:
+    if not added_names:
+        details = "\n\n".join(confirmation_requests + upload_errors)
+        notice = details or "문서를 추가하지 못했습니다. 파일 상태를 확인한 뒤 다시 첨부해 주세요."
+        _append_assistant_notice(notice)
+    elif not question:
         notice = (
             "문서를 현재 세션에 추가했습니다. 이어서 문서에서 확인할 내용을 질문해 주세요."
-            if added_names
-            else "문서를 추가하지 못했습니다. 파일 상태를 확인한 뒤 다시 첨부해 주세요."
         )
         _append_assistant_notice(notice)
     else:

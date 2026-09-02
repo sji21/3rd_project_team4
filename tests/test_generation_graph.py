@@ -13,6 +13,11 @@ from pathlib import Path
 
 from langchain_core.runnables import RunnableLambda
 
+from src.document_check.extraction_models import ExtractionResult, PageExtraction
+from src.document_check.session_retrieval import (
+    SessionDocumentRetriever,
+    build_session_document_context,
+)
 from src.generation import chain as chain_module
 from src.generation import graph as graph_module
 from src.generation.llm import get_llm
@@ -73,6 +78,27 @@ def empty_result(question: str = QUESTION) -> RetrievalResult:
     return RetrievalResult(question=question)
 
 
+def registry_document_evidence():
+    context = build_session_document_context(
+        "registry.pdf",
+        ExtractionResult(
+            pages=(
+                PageExtraction(
+                    1,
+                    "갑구에는 가압류가 있고 을구에는 근저당권이 설정되어 있습니다.",
+                    "tesseract",
+                    34,
+                ),
+            ),
+            elapsed_seconds=0.1,
+        ),
+        "browser-a",
+        document_id="registry-a",
+        document_kind="등기사항증명서",
+    )
+    return tuple(SessionDocumentRetriever(context).search("가압류 근저당권", k=1))
+
+
 def test_graph_normal_answer_path_matches_existing_chain():
     graph_service = StaticService(result_with_law())
     chain_service = StaticService(result_with_law())
@@ -115,6 +141,33 @@ def test_graph_uses_existing_retrieval_counts():
             "k_guide": 0,
         },
     ]
+
+
+def test_document_registry_aliases_do_not_enter_semantic_scope_branch():
+    evidences = registry_document_evidence()
+
+    for question in (
+        "등본 검토해줘",
+        "첨부한 등본 검토해줘",
+        "이 등본에서 주의깊게 봐야할 부분 알려줘",
+    ):
+        service = StaticService(result_with_law(question))
+        answer = graph_module.answer_document_question(
+            question,
+            evidences,
+            service=service,
+            llm=get_llm(
+                fake_responses=[
+                    "업로드한 registry.pdf 1쪽에는 가압류와 근저당권 문구가 있습니다."
+                ]
+            ),
+            # 호출되면 scope에서 REFUSE되어 이 테스트가 실패한다.
+            auxiliary_llm=get_llm(fake_responses=["REFUSE"]),
+        )
+
+        assert answer.status == "answered"
+        assert answer.document_evidences == evidences
+        assert service.calls == []
 
 
 def test_graph_skips_semantic_validation_for_simple_single_law_answer():

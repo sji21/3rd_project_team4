@@ -209,7 +209,10 @@ def build_generation_graph(
                 "next_step": "refuse",
             }
 
-        if scope.needs_semantic_review:
+        # Streamlit이 실제 세션 첨부 참조를 확인해 문서 경계로 보낸 요청은
+        # "첨부한 등본 검토해줘"처럼 법률 용어가 짧아도 일반 범위 LLM으로
+        # 재분류하지 않는다. deterministic 금지 질문과 custom guard는 위에서 유지한다.
+        if scope.needs_semantic_review and not document_search_attempted:
             return {
                 "scope": scope,
                 "next_step": "scope_semantic",
@@ -678,7 +681,7 @@ def answer_document_question(
 ) -> Answer:
     """세션 OCR과 공식 검색 결과를 같은 Graph 정책·검증 경로로 처리한다."""
 
-    if document_evidences and chain_module._is_document_only_question(question):
+    if not document_evidences or chain_module._is_document_only_question(question):
         kwargs.setdefault("k_law", 0)
         kwargs.setdefault("k_case", 0)
         kwargs.setdefault("k_guide", 0)

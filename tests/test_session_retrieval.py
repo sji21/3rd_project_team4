@@ -4,7 +4,9 @@ from src.document_check.extraction_models import ExtractionResult, PageExtractio
 from src.document_check.session_retrieval import (
     SessionDocumentRetriever,
     build_session_document_context,
+    normalize_document_review_question,
     question_references_uploaded_document,
+    referenced_document_kind,
 )
 
 
@@ -27,6 +29,62 @@ def test_routes_only_explicit_uploaded_document_questions_to_session_ocr():
         "보증금 반환은 언제 청구할 수 있나요?",
     ):
         assert not question_references_uploaded_document(question), question
+
+
+def test_registry_copy_alias_requires_registry_session_context():
+    for question in (
+        "등본에서 주의할 점 알려줘",
+        "이 등본을 분석해줘",
+        "첨부한 등본에 근저당이 있어?",
+    ):
+        assert question_references_uploaded_document(question, ("registry",))
+        assert referenced_document_kind(question, ("registry",)) == "registry"
+
+    assert not question_references_uploaded_document("등본에서 확인해줘")
+    assert not question_references_uploaded_document(
+        "첨부한 등본에서 확인해줘",
+        ("contract",),
+    )
+    assert not question_references_uploaded_document(
+        "주민등록등본은 어디서 발급하나요?",
+        ("registry",),
+    )
+    assert referenced_document_kind(
+        "주민등록등본은 어디서 발급하나요?",
+        ("registry",),
+    ) is None
+
+
+def test_generic_uploaded_document_reference_keeps_kind_unspecified():
+    assert question_references_uploaded_document(
+        "이 문서에서 주의할 점을 알려줘",
+        ("registry", "contract"),
+    )
+    assert referenced_document_kind(
+        "이 문서에서 주의할 점을 알려줘",
+        ("registry", "contract"),
+    ) is None
+
+
+def test_registry_review_variants_use_one_stable_internal_question():
+    expected = "이 등본에서 주의깊게 봐야 할 부분 알려줘"
+
+    for question in (
+        "등본 검토해줘",
+        "첨부한 등본 검토해줘",
+        "이 등본에서 주의깊게 봐야 할 부분 알려줘",
+        "등본에서 확인할 점을 알려줘",
+    ):
+        assert normalize_document_review_question(question, "registry") == expected
+
+    assert (
+        normalize_document_review_question("등본 발급일이 언제야?", "registry")
+        == "등본 발급일이 언제야?"
+    )
+    assert (
+        normalize_document_review_question("계약서 검토해줘", "contract")
+        == "계약서 검토해줘"
+    )
 
 
 def test_builds_one_session_chunk_per_readable_page():
@@ -139,6 +197,22 @@ def test_empty_context_and_blank_question_return_no_document_evidence():
     assert context.is_empty
     assert retriever.search("근저당권") == []
     assert retriever.search("", k=3) == []
+
+
+def test_first_pages_supports_broad_analysis_when_query_terms_are_absent():
+    context = build_session_document_context(
+        "registry.pdf",
+        extraction(
+            PageExtraction(1, "표제부 건물의 표시", "embedded_text", 10),
+            PageExtraction(2, "갑구 소유권 이전", "embedded_text", 9),
+        ),
+        "browser-abc",
+    )
+
+    found = SessionDocumentRetriever(context).first_pages(k=2)
+
+    assert [item.page_number for item in found] == [1, 2]
+    assert all(item.score == 0.0 for item in found)
 
 
 def test_rejects_missing_session_identity():

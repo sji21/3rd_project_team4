@@ -24,8 +24,8 @@ def test_streamlit_prepares_and_reuses_retrieval_service_in_background():
 
 
 def test_ocr_documents_are_attached_through_the_chat_input():
-    assert "analyze_registry_pdf" in TEXT
-    assert "analyze_contract_document" in TEXT
+    assert "analyze_uploaded_document" in TEXT
+    assert "_infer_document_kind" not in TEXT
     assert 'accept_file="multiple"' in TEXT
     assert 'file_type=("pdf", "jpg", "jpeg", "png")' in TEXT
     assert "def _store_uploaded_documents" in TEXT
@@ -40,7 +40,7 @@ def test_upload_question_is_queued_before_ocr_and_tracks_each_file():
     assert '"status": "queued"' in TEXT
     assert 'item["status"] = "processing"' in TEXT
     assert 'item["status"] = "completed"' in TEXT
-    assert 'item["status"] = "failed"' in TEXT
+    assert '"needs_confirmation" if needs_confirmation else "failed"' in TEXT
     assert 'with st.status("첨부 문서 OCR 준비 중..."' in TEXT
     assert 'disabled=bool(st.session_state.get("active_upload_job_id"))' in TEXT
 
@@ -150,7 +150,10 @@ def test_streamlit_wires_multiturn_before_existing_answer_chain():
     assert "resolved.standalone" in TEXT
     assert "service=retrieval_service" in TEXT
     assert "answer_document_question(" in TEXT
-    assert "question_references_uploaded_document(question)" in TEXT
+    assert "question_references_uploaded_document(" in TEXT
+    assert "_available_document_kinds()," in TEXT
+    assert "normalize_document_review_question(" in TEXT
+    assert "answer_question_text" in TEXT
     assert "if use_uploaded_document:" in TEXT
 
 

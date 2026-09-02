@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .analysis_models import DocumentAnalysis
-from .extraction import extract_pdf_text
+from .extraction import extract_document_text, extract_pdf_text
 from .extraction_models import ExtractionResult
 from .models import RiskSignal
 from .privacy import mask_sensitive_text
@@ -51,8 +51,12 @@ def _status_for(extraction: ExtractionResult, signals: tuple[RiskSignal, ...]):
     )
 
 
-def analyze_registry_pdf(filename: str, data: bytes) -> DocumentAnalysis:
-    extraction = extract_pdf_text(filename, data)
+def analyze_registry_extraction(
+    filename: str,
+    extraction: ExtractionResult,
+) -> DocumentAnalysis:
+    """이미 추출한 OCR 결과를 재사용해 등기 위험 신호를 점검한다."""
+
     signals = detect_risk_signals(extraction.pages)
     status, headline, summary = _status_for(extraction, signals)
     return DocumentAnalysis(
@@ -67,3 +71,15 @@ def analyze_registry_pdf(filename: str, data: bytes) -> DocumentAnalysis:
         disclaimer=DISCLAIMER,
         masked_text_preview=mask_sensitive_text(extraction.text[:12000]),
     )
+
+
+def analyze_registry_document(filename: str, data: bytes) -> DocumentAnalysis:
+    """PDF 또는 촬영 이미지에서 등기 문서를 점검한다."""
+
+    return analyze_registry_extraction(filename, extract_document_text(filename, data))
+
+
+def analyze_registry_pdf(filename: str, data: bytes) -> DocumentAnalysis:
+    """기존 PDF 전용 호출부와의 호환성을 유지한다."""
+
+    return analyze_registry_extraction(filename, extract_pdf_text(filename, data))
