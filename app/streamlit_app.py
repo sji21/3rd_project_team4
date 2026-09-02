@@ -34,6 +34,7 @@ from src.generation.chain import get_default_service  # noqa: E402
 from src.generation.graph import answer_document_question, answer_question  # noqa: E402
 from src.generation.conversation import resolve_question  # noqa: E402
 from src.generation.models import Answer  # noqa: E402
+from src.retrieval.readiness import BackgroundServiceLoader  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
@@ -58,10 +59,42 @@ WELCOME_MESSAGE = (
 
 
 @st.cache_resource(show_spinner=False)
-def load_retrieval_service():
-    """KURE-v1 검색 서비스를 앱 시작 시 한 번 준비하고 모든 rerun에서 재사용한다."""
+def load_retrieval_service_loader():
+    """KURE-v1을 한 번만 백그라운드에서 준비해 모든 rerun에서 재사용한다."""
 
-    return get_default_service()
+    return BackgroundServiceLoader(get_default_service).start()
+
+
+@st.fragment(run_every="1s")
+def render_retrieval_readiness(loader: BackgroundServiceLoader) -> None:
+    """전체 화면을 다시 실행하지 않고 검색 모델 준비 상태만 갱신한다."""
+
+    snapshot = loader.snapshot()
+    if snapshot.state in {"idle", "loading"}:
+        with st.status(
+            "검색 모델을 준비하고 있습니다.",
+            state="running",
+            expanded=False,
+        ):
+            st.caption(
+                "채팅 화면은 먼저 사용할 수 있습니다. "
+                f"첫 준비 작업 경과 {snapshot.elapsed_seconds:.0f}초"
+            )
+        return
+
+    if snapshot.state == "ready":
+        st.caption(":material/check_circle: 검색 모델 준비 완료")
+        return
+
+    st.error(
+        "검색 모델을 준비하지 못했습니다. 검색 인덱스와 로컬 환경을 확인해 주세요."
+    )
+    if st.button(
+        "검색 모델 다시 준비",
+        icon=":material/refresh:",
+        key="retry_retrieval_service",
+    ):
+        loader.retry()
 
 
 def configure_page() -> None:
@@ -808,7 +841,7 @@ def _store_uploaded_documents(uploaded_files, question: str) -> tuple[list[str],
     return added_names, errors
 
 
-def process_question(question: str, uploaded_files=(), retrieval_service=None) -> None:
+def process_question(question: str, uploaded_files=(), retrieval_loader=None) -> None:
     # 현재 질문을 넣기 전 대화만 후속 질문 해석에 사용한다.
     previous_messages = list(st.session_state["chat_messages"])
     added_names, upload_errors = _store_uploaded_documents(uploaded_files, question)
@@ -857,6 +890,11 @@ def process_question(question: str, uploaded_files=(), retrieval_service=None) -
             render_live_elapsed_timer()
 
         try:
+            # 화면과 사용자 질문은 먼저 표시한다. 모델 준비가 아직 끝나지 않았다면
+            # 여기서 최초 백그라운드 작업 하나만 기다린다.
+            retrieval_service = (
+                retrieval_loader.result() if retrieval_loader is not None else None
+            )
             resolved = resolve_question(question, previous_messages)
             # 사전 로딩한 RetrievalService 를 그대로 넘긴다. 문서 전용 질문이면
             # answer_document_question 이 공식 검색 상한을 0으로 낮춘다.
@@ -910,17 +948,7 @@ def main() -> None:
     render_header()
     render_document_manager()
 
-    try:
-        with st.spinner("검색 모델을 준비하고 있습니다. 처음 한 번만 실행됩니다..."):
-            retrieval_service = load_retrieval_service()
-    except Exception:
-        logger.exception("Streamlit 검색 모델 초기화 중 예외가 발생했습니다.")
-        st.error(
-            "검색 모델을 준비하지 못했습니다. "
-            "검색 인덱스와 로컬 환경을 확인한 뒤 앱을 다시 실행해 주세요."
-        )
-        return
-
+    readiness_area = st.container()
     chat_area = st.container(key="chat_area")
     with chat_area:
         render_history()
@@ -929,14 +957,22 @@ def main() -> None:
         "예: 전입신고 효력은? · 파일을 함께 첨부해 문서 내용을 질문할 수 있어요.",
         accept_file="multiple",
         file_type=("pdf", "jpg", "jpeg", "png"),
+        submit_mode="disable",
     )
+
+    # Streamlit은 위에서부터 화면 요소를 전송한다. 채팅 이력과 입력창을 먼저
+    # 만든 뒤 무거운 KURE-v1 초기화를 시작해 첫 화면의 체감 대기를 줄인다.
+    retrieval_loader = load_retrieval_service_loader()
+    with readiness_area:
+        render_retrieval_readiness(retrieval_loader)
+
     if submission:
         question = (getattr(submission, "text", submission) or "").strip()
         uploaded_files = tuple(getattr(submission, "files", ()) or ())
         if not question and not uploaded_files:
             return
         with chat_area:
-            process_question(question, uploaded_files, retrieval_service)
+            process_question(question, uploaded_files, retrieval_loader)
 
 
 if __name__ == "__main__":

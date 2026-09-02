@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from src.retrieval.retriever import matches
 from src.retrieval.terms import expand
 
 CACHE_DIR = Path("data/index/embeddings")
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingBackend(Protocol):
@@ -59,12 +61,38 @@ class OpenAIEmbedding:
 class SentenceTransformerEmbedding:
     """로컬 임베딩 모델 (KURE-v1, bge-m3 등)."""
 
-    def __init__(self, model_id: str, device: str | None = None, batch: int = 16) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        device: str | None = None,
+        batch: int = 16,
+        prefer_local_cache: bool = True,
+    ) -> None:
         from sentence_transformers import SentenceTransformer
 
         self.name = model_id
         self.batch = batch
-        self._model = SentenceTransformer(model_id, device=device)
+        if prefer_local_cache:
+            try:
+                # 캐시가 있는데 네트워크가 막힌 환경에서 Hugging Face의 파일별
+                # 갱신 확인과 재시도가 초기 구동 시간을 대부분 차지하지 않게 한다.
+                self._model = SentenceTransformer(
+                    model_id,
+                    device=device,
+                    local_files_only=True,
+                )
+                return
+            except OSError:
+                logger.info(
+                    "로컬 임베딩 모델 캐시가 없어 Hugging Face 다운로드를 시도합니다: %s",
+                    model_id,
+                )
+
+        self._model = SentenceTransformer(
+            model_id,
+            device=device,
+            local_files_only=False,
+        )
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         vectors = self._model.encode(

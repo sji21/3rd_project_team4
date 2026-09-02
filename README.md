@@ -138,9 +138,13 @@ ssh -N -L 11434:127.0.0.1:11434 \
 일반 법령 질문에 판례를 항상 섞지 않는다. 법령이나 기관 안내만으로 직접 답할 수
 있으면 판례 검색을 생략하고, 사용자가 판례를 요청하거나 질문 유형에 맞는 1차 근거를
 찾지 못한 경우에만 판례를 추가한다. 이 단계는 별도 LLM 호출 없이 결정론적으로
-동작해 응답 시간과 분류 실패 가능성을 늘리지 않는다. Streamlit은 앱 초기화 때
-KURE-v1 검색 서비스를 한 번 사전 로딩하고 `st.cache_resource`로 재사용하므로 첫 질문에서
-임베딩 모델을 새로 올리지 않는다.
+동작해 응답 시간과 분류 실패 가능성을 늘리지 않는다. Streamlit은 채팅 화면과 입력창을
+먼저 표시한 뒤 KURE-v1 검색 서비스를 백그라운드에서 한 번 준비하고
+`st.cache_resource`로 재사용한다. 모델 파일은 로컬 캐시를 먼저 확인하고, 캐시가 없을
+때만 Hugging Face 다운로드를 시도한다. 준비 전에 질문하면 화면에 질문을 표시한 뒤 같은
+준비 작업이 끝날 때까지 기다리므로 모델을 중복 적재하지 않는다.
+초기 준비 구조와 로컬 비교 결과, RunPod 워밍업 절차 후보는
+[`docs/eval-patch039-startup-readiness.md`](docs/eval-patch039-startup-readiness.md)에 기록한다.
 
 실행 순서와 조건 분기는 LangGraph `StateGraph`가 담당한다(`src/generation/graph.py`).
 Graph 는 새 판정 규칙을 만들지 않는다. 기존 `chain.py`·`abstention.py`·`validation.py`·

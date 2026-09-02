@@ -10,14 +10,17 @@ def test_streamlit_ui_is_chat_first():
     assert "st.chat_input" in TEXT
 
 
-def test_streamlit_preloads_and_reuses_retrieval_service():
+def test_streamlit_prepares_and_reuses_retrieval_service_in_background():
     assert "answer_question" in TEXT
     assert "get_default_service" in TEXT
     assert "@st.cache_resource(show_spinner=False)" in TEXT
-    assert "def load_retrieval_service()" in TEXT
-    assert "retrieval_service = load_retrieval_service()" in TEXT
+    assert "def load_retrieval_service_loader()" in TEXT
+    assert "BackgroundServiceLoader(get_default_service).start()" in TEXT
+    assert "retrieval_loader = load_retrieval_service_loader()" in TEXT
+    assert '@st.fragment(run_every="1s")' in TEXT
+    assert "retrieval_loader.result()" in TEXT
     assert "service=retrieval_service" in TEXT
-    assert "처음 한 번만 실행됩니다" in TEXT
+    assert "검색 모델 준비 완료" in TEXT
 
 
 def test_ocr_documents_are_attached_through_the_chat_input():
