@@ -88,4 +88,3 @@ class BackgroundServiceLoader(Generic[ServiceT]):
                 return False
             self._submit_locked()
             return True
-

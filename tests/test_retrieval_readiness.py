@@ -53,4 +53,3 @@ def test_loader_retries_only_after_failure() -> None:
     assert loader.result(timeout=2) is service
     assert loader.retry() is False
     assert calls == 2
-

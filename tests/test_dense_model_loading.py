@@ -55,4 +55,3 @@ def test_embedding_does_not_hide_non_cache_initialization_errors(monkeypatch) ->
     _install_fake_sentence_transformer(monkeypatch, FakeSentenceTransformer)
     with pytest.raises(RuntimeError, match="invalid model"):
         SentenceTransformerEmbedding("nlpai-lab/KURE-v1")
-
