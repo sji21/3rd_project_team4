@@ -4,7 +4,7 @@
 
 ### Changed
 
-- PATCH-039 renders the Streamlit chat history and input before starting KURE-v1 initialization. A cached single-flight background loader reports readiness in an independently refreshing fragment, shares the same initialization with early questions, and permits retry only after a failed load. SentenceTransformer now tries the local model cache first and contacts Hugging Face only when the cache is absent, avoiding long offline metadata retries. (commit: pending)
+- PATCH-039 renders the Streamlit chat history and input before starting KURE-v1 initialization. A cached single-flight background loader reports readiness in an independently refreshing fragment, shares the same initialization with early questions, and permits retry only after a failed load. SentenceTransformer now tries the local model cache first and contacts Hugging Face only when the cache is absent, avoiding long offline metadata retries. (commit: `0ca21ad`)
 
 ## 2026-09-01
 
