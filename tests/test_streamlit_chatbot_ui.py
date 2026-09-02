@@ -182,10 +182,21 @@ def test_assistant_answer_text_has_explicit_visible_color():
 
 def test_answer_render_does_not_expose_raw_text_as_fallback():
     assert "def visible_answer_text(answer: Answer)" in TEXT
-    assert "st.markdown(visible_answer_text(answer))" in TEXT
     assert '"content": visible_answer_text(answer)' in TEXT
     assert "raw_text = (answer.raw_text" not in TEXT
     assert "검증 전 생성 원문일 수 있으므로" in TEXT
+
+
+def test_final_answer_is_rendered_only_from_canonical_history():
+    answer_body = TEXT[TEXT.index("def _answer_visible_question("):TEXT.index("def process_question(")]
+    process_body = TEXT[TEXT.index("def process_question("):TEXT.index("def process_active_upload_job(")]
+    notice_body = TEXT[TEXT.index("def _append_assistant_notice("):TEXT.index("def _answer_visible_question(")]
+
+    assert "render_assistant_meta(" not in answer_body
+    assert "st.markdown(visible_answer_text(answer))" not in answer_body
+    assert 'st.chat_message("assistant"' not in notice_body
+    assert "_answer_visible_question(" in process_body
+    assert "st.rerun()" in process_body
 
 
 def test_answer_elapsed_time_is_shown_in_chat_meta():

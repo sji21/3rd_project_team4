@@ -1172,8 +1172,8 @@ def _store_uploaded_documents(
 
 
 def _append_assistant_notice(notice: str) -> None:
-    with st.chat_message("assistant", avatar="🏠"):
-        st.markdown(notice)
+    """안내를 세션 이력에만 저장해 다음 정식 렌더링에서 표시한다."""
+
     st.session_state["chat_messages"].append(
         {
             "role": "assistant",
@@ -1262,7 +1262,6 @@ def _answer_visible_question(
                 "답변을 불러오지 못했습니다. "
                 "검색 인덱스와 Ollama 상태를 확인한 뒤 다시 시도해 주세요."
             )
-            st.error(error_message)
             st.session_state["chat_messages"].append(
                 {
                     "role": "assistant",
@@ -1273,13 +1272,11 @@ def _answer_visible_question(
                 }
             )
         else:
-            st.markdown(visible_answer_text(answer))
             assistant_message = answer_to_message(
                 answer,
                 used_history=used_history,
                 elapsed_seconds=elapsed_seconds,
             )
-            render_assistant_meta(assistant_message)
             st.session_state["chat_messages"].append(assistant_message)
 
 
@@ -1299,6 +1296,10 @@ def process_question(question: str, retrieval_loader=None) -> None:
     with st.chat_message("user", avatar="👤"):
         st.markdown(question)
     _answer_visible_question(question, previous_messages, retrieval_loader)
+    # 처리 중 임시 타이머가 있던 실행에서 최종 답변을 다시 그리지 않는다.
+    # 세션 이력을 기준으로 새 실행에서 한 번만 렌더링하면 Streamlit의 stale
+    # 요소가 최종 상태 배지 아래에 흐린 복제본으로 남지 않는다.
+    st.rerun()
 
 
 def process_active_upload_job(retrieval_loader=None) -> None:
