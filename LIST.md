@@ -8,7 +8,7 @@
 | [x] | PATCH-002 | 완료 | gitcatho | `feat/patch-002-risk-signals` | 기능 추가 | 높음 | 개인정보 마스킹과 등기 위험 신호 규칙 | 주민번호·전화·계좌 마스킹, 갑구·을구 핵심 신호 탐지, 근거 페이지·문구·추가 확인사항 반환, 안전 판정 금지, 규칙 테스트 통과 | PATCH-001 | - | 2026-08-26 | 2026-08-26 | `417d86b` |
 | [x] | PATCH-003 | 완료 | gitcatho | `feat/patch-003-streamlit-registry-check` | 기능 추가 | 높음 | Streamlit PDF 업로드 및 점검 결과 화면 | 동의 기반 PDF 업로드, 상태·신호·근거·체크리스트 표시, 마스킹된 미리보기, 개인정보 제외 JSON 다운로드, Streamlit 앱 테스트 통과 | PATCH-002 | - | 2026-08-26 | 2026-08-26 | `42c51e1` |
 | [x] | PATCH-004 | 완료 | gitcatho | `feat/patch-004-rag-handoff` | 기능 추가 | 중간 | LangChain·LangGraph 후속 연결 인터페이스 | 위험 신호별 RAG 질의 생성, Retriever 입력 스키마 문서화, `ANSWER/ABSTAIN/REFUSE` 연결 경계 명시, 현재 기능은 LLM 없이 실행 | PATCH-002 | - | 2026-08-26 | 2026-08-26 | `e7fbf55` |
-| [ ] | PATCH-005 | 완료 | gitcatho | `feat/patch-005-registry-integration` | 테스트 | 중간 | 실행 문서, 통합 테스트와 Windows 재현 검증 | README·설치 문서 갱신, 실제 샘플 통합 테스트, `pytest -q`·`pip check` 통과, macOS 실측 기록, Windows 팀원 검증 절차와 결과 기록 | PATCH-001, PATCH-002, PATCH-003, PATCH-004, PATCH-006 | - | 2026-08-26 | - | `0d93f60` |
+| [x] | PATCH-005 | 완료 | gitcatho | `feat/patch-005-registry-integration` | 테스트 | 중간 | 실행 문서, 통합 테스트와 Windows 재현 검증 | README·설치 문서 갱신, 실제 샘플 통합 테스트, `pytest -q`·`pip check` 통과, macOS 실측 기록, Windows 팀원 검증 절차와 결과 기록 | PATCH-001, PATCH-002, PATCH-003, PATCH-004, PATCH-006 | - | 2026-08-26 | 미확인 | `0d93f60` |
 | [x] | PATCH-006 | 완료 | gitcatho | `fix/patch-006-pdfium-thread-safety` | 버그 수정 | 높음 | pypdfium2 동시 렌더링 segmentation fault 수정 | PDF 렌더링은 단일 흐름으로 수행하고 Tesseract subprocess만 병렬화, 실제 6페이지 샘플 반복 5회 무충돌, 전체 테스트 통과 | PATCH-001 | - | 2026-08-26 | 2026-08-26 | `534920d` |
 | [x] | PATCH-007 | 완료 | gitcatho | `fix/patch-007-theme-contrast` | 버그 수정 | 높음 | Streamlit 밝은 배경에서 흰색 본문이 보이지 않는 테마 충돌 수정 | 앱 테마를 명시하고 본문·위젯·사이드바 대비를 확인, 화면 회귀 테스트와 전체 테스트 통과 | PATCH-003 | - | 2026-08-27 | 2026-08-27 | `26f8cd1` |
 | [x] | PATCH-008 | 완료 | gitcatho | `feat/patch-008-project-structure` | 리팩터링 | 중간 | README 기준으로 프로젝트 코드·기획 문서·생성 스크립트와 산출물 구조 정리 | 기존 기능과 import 경로를 보존하며 파일을 역할별 디렉터리에 배치하고 README 구조·실행법·산출물 위치를 갱신한 뒤 전체 테스트 통과 | PATCH-007 | - | 2026-08-27 | 2026-08-27 | `0185314` |
@@ -45,6 +45,7 @@
 | [x] | PATCH-044 | 완료 | gitcatho | `fix/patch-044-chat-input-reactivation` | 버그 수정 | 높음 | 답변 완료 후 채팅 입력창이 간헐적으로 비활성화되는 오류 수정 | 일반 질문 또는 첨부 문서 질문의 답변과 상태 표시가 완료됐는데도 `st.chat_input`이 비활성화된 채 남아 후속 질문을 입력할 수 없는 간헐적 오류를 재현·수정한다. `submit_mode="disable"`, `active_upload_job_id`, 업로드 작업의 완료·실패·예외 처리와 `st.rerun()` 경계를 점검하고, 성공·보류·거절·OCR 실패·생성 예외를 포함한 모든 종료 경로에서 활성 작업 상태를 확실히 정리해 다음 rerun에서 입력창을 다시 활성화한다. 중복 질문·중복 OCR 방지 기능은 유지하며, 각 종료 경로 후 채팅 입력 가능 여부와 연속 질문 동작을 Streamlit AppTest로 회귀 검증한다. | PATCH-040, PATCH-041 | - | 2026-09-02 | 2026-09-02 | `a7daf82` |
 | [x] | PATCH-045 | 완료 | gitcatho | `fix/patch-045-chat-status-ghosting` | 버그 수정 | 중간 | 답변 상태 배지와 응답 시간의 중복 잔상 제거 | 답변 완료 또는 Streamlit rerun 과정에서 `답변 범위에 포함되지 않습니다` 같은 상태 배지와 응답 시간이 정상 요소 아래에 흐린 복제본으로 한 번 더 남는 간헐적 렌더링 오류를 재현·수정한다. 채팅 이력 재렌더링, 처리 중 임시 슬롯 정리, fragment·전체 rerun 경계, 동일 메시지 메타데이터의 중복 렌더링과 Streamlit stale-element 표시를 점검한다. 답변 상태·응답 시간은 메시지마다 한 번만 표시하고 새 질문, 답변 완료, 페이지 rerun과 창 크기 변경 후에도 잔상이 남지 않게 하며 AppTest와 실제 브라우저 연속 질문·스크린샷으로 회귀 검증한다. | PATCH-029, PATCH-042, PATCH-044 | - | 2026-09-02 | 2026-09-02 | `48a9174` |
 | [x] | PATCH-046 | 완료 | gitcatho | `fix/patch-046-scroll-position-after-answer` | 버그 수정 | 중간 | 답변 완료 후 대화 화면이 하단으로 강제 이동하는 오류 수정 | 답변 완료 직후 사용자가 이전 대화를 보기 위해 위로 스크롤해도 전체 `st.rerun()`과 하단 `st.chat_input`의 포커스 복원 때문에 화면이 다시 아래로 당겨지는 현상을 재현·수정한다. PATCH-045의 상태 배지 잔상 방지 효과는 유지하면서 처리 중 타이머를 안정된 답변 placeholder 안에서 최종 답변으로 교체하고, 불필요한 전체 rerun과 입력창 자동 포커스를 제거한다. 사용자가 이미 하단에 있을 때의 자연스러운 새 답변 노출은 유지하되 위쪽을 읽는 중에는 스크롤 위치를 침범하지 않으며, 일반 답변·거절·오류·첨부 문서 답변과 연속 질문을 AppTest 및 실제 브라우저 스크롤로 회귀 검증한다. | PATCH-039, PATCH-045 | - | 2026-09-02 | 2026-09-02 | `c4f0767` |
+| [ ] | PATCH-047 | 진행 중 | gitcatho | `docs/patch-047-patch-005-completion-record` | 문서 | 낮음 | PATCH-005 완료 기록 정합성 보정 | 완료 사실과 구현 커밋이 확인된 PATCH-005의 체크박스를 완료로 표시하고, 확인할 수 없는 완료일은 임의로 추정하지 않고 `미확인`으로 명시한다. 현재 작업 경계의 Windows 검증 대기 문구를 제거하고 LIST·양쪽 CHANGELOG 기록을 동기화한다. | PATCH-005 | - | 2026-09-02 | - | - |
 
 ## 현재 작업 경계
 
@@ -71,7 +72,6 @@
 - `PATCH-015`는 생성 담당이 완료해 병합됨(PR #2)
 - 임베딩 모델: `nlpai-lab/KURE-v1` (1024차원) — 모델 비교 결과로 확정
 - PATCH-020 당시 검색 파트 검증: 전체 테스트 189개 통과(스킵 2, 사전 존재하던 Windows 환경변수 길이 오류 2건은 `tests/test_pdf_extraction.py` 소관)·`pip check`·청크 규격 검사 통과(운영 코퍼스 165청크 = 법령 133·판례 26·안내 6, 실험용 샘플 135청크는 별도). 최신 통합 검증은 PATCH-037 기록을 따른다
-- 병행 리뷰: `PATCH-005`는 Windows 팀원 검증 결과 기록 대기
 - 이미 작성된 후속 패치 코드는 아직 커밋 대상이 아니며 각 패치 차례에 별도로 검토·검증한다.
 
 ## 검색 파트 후속 과제
