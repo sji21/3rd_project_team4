@@ -40,9 +40,9 @@ class ScopeDecision:
     needs_semantic_review: bool = False
 
 
-SCOPE_JUDGE_SYSTEM = """당신은 전세ON의 질문 범위 분류기입니다.
+SCOPE_JUDGE_SYSTEM = """당신은 LENS의 질문 범위 분류기입니다.
 
-전세ON은 대한민국 주택임대차의 권리·절차·법령·판례·공식 기관 안내를
+LENS는 대한민국 주택임대차의 권리·절차·법령·판례·공식 기관 안내를
 근거로 설명하는 서비스입니다.
 
 다음 원칙으로 질문을 분류하십시오.

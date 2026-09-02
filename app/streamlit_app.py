@@ -1,4 +1,4 @@
-"""전세ON 챗봇 UI.
+"""LENS 챗봇 UI.
 
 공식 법령·판례·기관 안내 RAG와 현재 브라우저 세션의 업로드 문서 OCR을
 서로 다른 근거 저장소로 유지하면서 하나의 대화 화면에서 연결한다.
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 STATUS_LABELS = {
     "answered": ("근거를 확인해 답변드렸습니다.", "✅"),
     "abstained": ("답변을 바로 제공하기 어렵습니다.", "⚠️"),
-    "refused": ("이 질문은 전세ON의 답변 범위에 포함되지 않습니다.", "🚫"),
+    "refused": ("이 질문은 LENS의 답변 범위에 포함되지 않습니다.", "🚫"),
 }
 
 STATUS_CLASSES = {
@@ -113,7 +113,7 @@ def render_retrieval_status(loader: BackgroundServiceLoader) -> None:
 
 def configure_page() -> None:
     st.set_page_config(
-        page_title="전세ON | 전세계약 법률 챗봇",
+        page_title="LENS | 주택임대차 근거 기반 챗봇",
         page_icon="🏠",
         layout="centered",
         initial_sidebar_state="expanded",
