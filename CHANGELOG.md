@@ -4,6 +4,7 @@
 
 ### Fixed (Bug Fixes)
 
+- PATCH-040 records an uploaded question and filenames before OCR begins, then processes a session-scoped upload job on the next Streamlit rerun. Each file exposes queued, OCR-processing, completed, or failed status; failures preserve the question and user-safe error. The active job ID prevents duplicate OCR and duplicate user messages across reruns while the chat input remains disabled during processing. (commit: `dcd8816`)
 - PATCH-042 keeps the expanded service-introduction card and chat input visible together on the initial Streamlit viewport. The model-readiness status now sits above the card, and an accessible collapse/expand control preserves its state for the browser session while resizing the chat area. The introduction reruns independently, uses clearer title-to-copy spacing, and prevents the fixed Streamlit toolbar and constrained-width Deploy control from blocking the toggle. (commit: `8c7ca3e`)
 
 ### Changed

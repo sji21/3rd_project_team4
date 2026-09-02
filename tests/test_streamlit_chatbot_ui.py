@@ -32,6 +32,25 @@ def test_ocr_documents_are_attached_through_the_chat_input():
     assert "def render_document_manager" in TEXT
 
 
+def test_upload_question_is_queued_before_ocr_and_tracks_each_file():
+    assert 'st.session_state["upload_jobs"] = {}' in TEXT
+    assert 'st.session_state["active_upload_job_id"] = None' in TEXT
+    assert "def _queue_upload_job" in TEXT
+    assert "def process_active_upload_job" in TEXT
+    assert '"status": "queued"' in TEXT
+    assert 'item["status"] = "processing"' in TEXT
+    assert 'item["status"] = "completed"' in TEXT
+    assert 'item["status"] = "failed"' in TEXT
+    assert 'with st.status("첨부 문서 OCR 준비 중..."' in TEXT
+    assert 'disabled=bool(st.session_state.get("active_upload_job_id"))' in TEXT
+
+    main_body = TEXT.split("def main() -> None:", 1)[1]
+    queue_pos = main_body.index("_queue_upload_job(question, uploaded_files)")
+    rerun_pos = main_body.index("st.rerun()", queue_pos)
+    process_pos = main_body.index("process_active_upload_job(retrieval_loader)")
+    assert process_pos < queue_pos < rerun_pos
+
+
 def test_user_facing_status_messages_are_descriptive():
     assert '"answered": ("근거를 확인해 답변드렸습니다.", "✅")' in TEXT
     assert '"abstained": ("답변을 바로 제공하기 어렵습니다.", "⚠️")' in TEXT
