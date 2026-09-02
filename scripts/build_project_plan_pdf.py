@@ -1,4 +1,4 @@
-"""Build the shareable JeonseON project-plan PDF from Markdown."""
+"""Build the shareable LENS project-plan PDF from Markdown."""
 
 from __future__ import annotations
 
@@ -276,7 +276,7 @@ def page_decor(canvas, doc) -> None:
     canvas.line(18 * mm, height - 15 * mm, width - 18 * mm, height - 15 * mm)
     canvas.setFont("Korean", 7.5)
     canvas.setFillColor(MUTED)
-    canvas.drawString(18 * mm, height - 11.5 * mm, "전세ON 프로젝트 기획서")
+    canvas.drawString(18 * mm, height - 11.5 * mm, "LENS 프로젝트 기획서")
     canvas.drawRightString(width - 18 * mm, 11 * mm, f"{doc.page}")
     canvas.setFillColor(BLUE)
     canvas.rect(18 * mm, 10.5 * mm, 10 * mm, 0.7 * mm, fill=1, stroke=0)
@@ -466,8 +466,8 @@ def build_pdf() -> Path:
         rightMargin=margin_x,
         topMargin=18 * mm,
         bottomMargin=17 * mm,
-        title="전세ON 프로젝트 기획서",
-        author="전세ON 프로젝트 팀",
+        title="LENS 프로젝트 기획서",
+        author="LENS 프로젝트 팀",
         subject="주택임대차 법령 근거 기반 RAG 프로젝트 실행 기획서",
     )
     doc.addPageTemplates(
@@ -479,7 +479,7 @@ def build_pdf() -> Path:
 
     story = [
         Spacer(1, 42 * mm),
-        Paragraph("전세ON", styles["cover_title"]),
+        Paragraph("LENS", styles["cover_title"]),
         Paragraph("프로젝트 실행 기획서", styles["cover_title"]),
         Spacer(1, 9 * mm),
         HRFlowable(width="34%", thickness=3, color=BLUE, hAlign="LEFT"),

@@ -44,7 +44,7 @@ def search_by_case_number(case_number: str, oc: str) -> list[dict[str, object]]:
         "OC": oc, "target": "prec", "type": "JSON", "mobileYn": "Y",
         "nb": case_number, "display": "100",
     })
-    request = urllib.request.Request(f"{API_BASE}?{params}", headers={"User-Agent": "JeonseON-data-repair/1.0"})
+    request = urllib.request.Request(f"{API_BASE}?{params}", headers={"User-Agent": "LENS-data-repair/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8"))
     search = payload.get("PrecSearch", {})

@@ -1,4 +1,4 @@
-"""전세ON Generation LangGraph workflow.
+"""LENS Generation LangGraph workflow.
 
 기존 Generation 정책과 판단 기준은 ``src.generation.chain`` 및 기존 기능 모듈에
 그대로 둔다. 이 파일은 그 기능들을 LangGraph 노드로 연결해 질문 하나의 실행 순서,
