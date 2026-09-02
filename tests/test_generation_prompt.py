@@ -165,7 +165,7 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("같은 무게로 쓰지 마십시오", prompt_module.SYSTEM_QA)
 
     def test_forbids_verdict_on_user_contract(self) -> None:
-        # 전세ON 의 기본 원칙. 이 줄이 사라지면 서비스 성격 자체가 바뀐다.
+        # LENS의 기본 원칙. 이 줄이 사라지면 서비스 성격 자체가 바뀐다.
         self.assertIn("판정하지 마십시오", prompt_module.SYSTEM_QA)
         self.assertIn("판정하지 않습니다", prompt_module.NON_VERDICT_NOTICE)
 

@@ -1,4 +1,4 @@
-"""전세ON Streamlit 챗봇 초기 화면과 질문 처리 테스트."""
+"""LENS Streamlit 챗봇 초기 화면과 질문 처리 테스트."""
 
 from __future__ import annotations
 

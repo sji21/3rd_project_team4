@@ -1,4 +1,4 @@
-"""전세ON 관계형 DB와 Chroma 컬렉션을 초기화한다."""
+"""LENS 관계형 DB와 Chroma 컬렉션을 초기화한다."""
 
 from __future__ import annotations
 

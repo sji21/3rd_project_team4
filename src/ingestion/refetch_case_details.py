@@ -59,7 +59,7 @@ def fetch_detail_response(case_id: str, oc: str) -> tuple[dict[str, object] | No
     """상세 API 응답을 보존한다. 필수 필드 검사는 호출자 정책에 맡긴다."""
 
     params = urllib.parse.urlencode({"OC": oc, "target": "prec", "ID": case_id, "type": "JSON"})
-    request = urllib.request.Request(f"{API_BASE}?{params}", headers={"User-Agent": "JeonseON-data-repair/1.0"})
+    request = urllib.request.Request(f"{API_BASE}?{params}", headers={"User-Agent": "LENS-data-repair/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8"))
     service = payload.get("PrecService")
