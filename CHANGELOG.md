@@ -9,6 +9,7 @@
 
 ### Changed
 
+- PATCH-041 classifies uploaded registry records and lease contracts from a single reusable OCR extraction instead of filenames or question wording. Ambiguous documents request confirmation rather than defaulting to contracts; session routing now resolves safe aliases such as `등본` and `이 문서`, prioritizes the most recent matching upload, excludes resident-registration copies, and abstains instead of falling back to generic official search when uploaded evidence cannot be read. (commit: `c96926e`)
 - PATCH-039 renders the Streamlit chat history and input before starting KURE-v1 initialization. A cached single-flight background loader reports readiness in an independently refreshing fragment, shares the same initialization with early questions, and permits retry only after a failed load. SentenceTransformer now tries the local model cache first and contacts Hugging Face only when the cache is absent, avoiding long offline metadata retries. (commit: `0ca21ad`)
 
 ## 2026-09-01
