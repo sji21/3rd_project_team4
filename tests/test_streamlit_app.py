@@ -115,7 +115,23 @@ def test_chat_input_runs_the_existing_answer_chain(monkeypatch) -> None:
 
     assert not app.exception
     assert any("테스트 답변입니다." in markdown.value for markdown in app.markdown)
+    answer_meta = [
+        markdown.value
+        for markdown in app.markdown
+        if '<div class="answer-meta-row">' in markdown.value
+    ]
+    assert len(answer_meta) == 1
+    assert "status-answered" in answer_meta[0]
     assert not app.chat_input[0].disabled
+
+    # 일반 rerun에서도 같은 답변의 상태·시간 메타데이터는 한 번만 렌더링한다.
+    app.run(timeout=20)
+    answer_meta = [
+        markdown.value
+        for markdown in app.markdown
+        if '<div class="answer-meta-row">' in markdown.value
+    ]
+    assert len(answer_meta) == 1
 
 
 def _seed_active_upload_job(app: AppTest, *, question: str) -> None:
