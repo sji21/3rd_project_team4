@@ -67,7 +67,7 @@ def load_retrieval_service_loader():
 
 @st.fragment(run_every="1s")
 def render_retrieval_readiness(loader: BackgroundServiceLoader) -> None:
-    """전체 화면을 다시 실행하지 않고 검색 모델 준비 상태만 갱신한다."""
+    """검색 모델이 준비되는 동안에만 상태를 주기적으로 갱신한다."""
 
     snapshot = loader.snapshot()
     if snapshot.state in {"idle", "loading"}:
@@ -80,6 +80,19 @@ def render_retrieval_readiness(loader: BackgroundServiceLoader) -> None:
                 "채팅 화면은 먼저 사용할 수 있습니다. "
                 f"첫 준비 작업 경과 {snapshot.elapsed_seconds:.0f}초"
             )
+        return
+
+    # 준비 완료 후에도 run_every fragment를 계속 두면 긴 채팅 화면의
+    # 스크롤을 방해할 수 있다. 전체 앱을 한 번만 다시 실행해 polling을 끝낸다.
+    st.rerun()
+
+
+def render_retrieval_status(loader: BackgroundServiceLoader) -> None:
+    """로딩 중에만 polling fragment를 사용하고 종료 상태는 정적으로 표시한다."""
+
+    snapshot = loader.snapshot()
+    if snapshot.state in {"idle", "loading"}:
+        render_retrieval_readiness(loader)
         return
 
     if snapshot.state == "ready":
@@ -95,6 +108,7 @@ def render_retrieval_readiness(loader: BackgroundServiceLoader) -> None:
         key="retry_retrieval_service",
     ):
         loader.retry()
+        st.rerun()
 
 
 def configure_page() -> None:
@@ -540,6 +554,7 @@ def configure_page() -> None:
             .st-key-chat_area {
                 min-height: calc(100vh - 330px);
             }
+
         }
 
         @media (max-width: 900px) {
@@ -971,15 +986,29 @@ def render_user_attachments(message: dict) -> None:
             st.warning(attachment["error"])
 
 
-def render_history() -> None:
+def render_assistant_content(message: dict) -> None:
+    """최종 답변 본문과 메타데이터를 하나의 안정된 슬롯에 그린다."""
+
+    st.markdown(message["content"])
+    render_assistant_meta(message)
+
+
+def render_history(active_upload_message_id: str | None = None):
+    active_attachment_slot = None
     for message in st.session_state["chat_messages"]:
         avatar = "🏠" if message["role"] == "assistant" else "👤"
         with st.chat_message(message["role"], avatar=avatar):
-            st.markdown(message["content"])
             if message["role"] == "assistant":
-                render_assistant_meta(message)
+                render_assistant_content(message)
             else:
-                render_user_attachments(message)
+                st.markdown(message["content"])
+                if message.get("message_id") == active_upload_message_id:
+                    active_attachment_slot = st.empty()
+                    with active_attachment_slot.container():
+                        render_user_attachments(message)
+                else:
+                    render_user_attachments(message)
+    return active_attachment_slot
 
 
 def render_live_elapsed_timer() -> None:
@@ -1172,17 +1201,18 @@ def _store_uploaded_documents(
 
 
 def _append_assistant_notice(notice: str) -> None:
-    """안내를 세션 이력에만 저장해 다음 정식 렌더링에서 표시한다."""
+    """업로드 안내를 저장하고 현재 실행의 채팅 영역에 바로 표시한다."""
 
-    st.session_state["chat_messages"].append(
-        {
-            "role": "assistant",
-            "content": notice,
-            "status": None,
-            "sources": [],
-            "context_content": "",
-        }
-    )
+    message = {
+        "role": "assistant",
+        "content": notice,
+        "status": None,
+        "sources": [],
+        "context_content": "",
+    }
+    st.session_state["chat_messages"].append(message)
+    with st.chat_message("assistant", avatar="🏠"):
+        render_assistant_content(message)
 
 
 def _answer_visible_question(
@@ -1192,8 +1222,8 @@ def _answer_visible_question(
 ) -> None:
     with st.chat_message("assistant", avatar="🏠"):
         started_at = time.perf_counter()
-        timer_slot = st.empty()
-        with timer_slot:
+        response_slot = st.empty()
+        with response_slot.container():
             render_live_elapsed_timer()
 
         try:
@@ -1255,29 +1285,29 @@ def _answer_visible_question(
             answer = None
         finally:
             elapsed_seconds = time.perf_counter() - started_at
-            timer_slot.empty()
 
         if answer is None:
             error_message = (
                 "답변을 불러오지 못했습니다. "
                 "검색 인덱스와 Ollama 상태를 확인한 뒤 다시 시도해 주세요."
             )
-            st.session_state["chat_messages"].append(
-                {
-                    "role": "assistant",
-                    "content": error_message,
-                    "status": None,
-                    "sources": [],
-                    "context_content": "",
-                }
-            )
+            assistant_message = {
+                "role": "assistant",
+                "content": error_message,
+                "status": None,
+                "sources": [],
+                "context_content": "",
+            }
         else:
             assistant_message = answer_to_message(
                 answer,
                 used_history=used_history,
                 elapsed_seconds=elapsed_seconds,
             )
-            st.session_state["chat_messages"].append(assistant_message)
+        st.session_state["chat_messages"].append(assistant_message)
+        response_slot.empty()
+        with response_slot.container():
+            render_assistant_content(assistant_message)
 
 
 def process_question(question: str, retrieval_loader=None) -> None:
@@ -1296,20 +1326,16 @@ def process_question(question: str, retrieval_loader=None) -> None:
     with st.chat_message("user", avatar="👤"):
         st.markdown(question)
     _answer_visible_question(question, previous_messages, retrieval_loader)
-    # 처리 중 임시 타이머가 있던 실행에서 최종 답변을 다시 그리지 않는다.
-    # 세션 이력을 기준으로 새 실행에서 한 번만 렌더링하면 Streamlit의 stale
-    # 요소가 최종 상태 배지 아래에 흐린 복제본으로 남지 않는다.
-    st.rerun()
 
 
-def process_active_upload_job(retrieval_loader=None) -> None:
+def process_active_upload_job(retrieval_loader=None, attachment_slot=None) -> None:
     """화면에 먼저 표시된 활성 업로드 작업을 이어서 처리한다."""
 
     job_id = st.session_state.get("active_upload_job_id")
     upload_job = st.session_state["upload_jobs"].get(job_id)
     if upload_job is None:
         _finish_upload_job(job_id)
-        st.rerun()
+        return
 
     try:
         with st.status("첨부 문서 OCR 준비 중...", expanded=True) as upload_status:
@@ -1364,30 +1390,37 @@ def process_active_upload_job(retrieval_loader=None) -> None:
     finally:
         try:
             _sync_upload_message(upload_job)
+            upload_message = _upload_message(upload_job["message_id"])
+            if attachment_slot is not None and upload_message is not None:
+                attachment_slot.empty()
+                with attachment_slot.container():
+                    render_user_attachments(upload_message)
         except Exception:
             logger.exception("업로드 메시지의 최종 상태를 동기화하지 못했습니다.")
         _finish_upload_job(job_id)
-
-    st.rerun()
 
 
 def main() -> None:
     configure_page()
     init_chat_state()
-    upload_in_progress = reconcile_upload_job_state()
+    reconcile_upload_job_state()
+    active_job_id = st.session_state.get("active_upload_job_id")
+    active_upload_job = st.session_state["upload_jobs"].get(active_job_id)
+    active_upload_message_id = (
+        active_upload_job.get("message_id") if active_upload_job is not None else None
+    )
     readiness_area = st.container(key="retrieval_readiness_area")
     render_header()
     render_document_manager()
 
     chat_area = st.container(key="chat_area")
     with chat_area:
-        render_history()
+        active_attachment_slot = render_history(active_upload_message_id)
 
     submission = st.chat_input(
         "예: 전입신고 효력은? · 파일을 함께 첨부해 문서 내용을 질문할 수 있어요.",
         accept_file="multiple",
         file_type=("pdf", "jpg", "jpeg", "png"),
-        disabled=upload_in_progress,
         submit_mode="disable",
     )
 
@@ -1395,11 +1428,11 @@ def main() -> None:
     # 만든 뒤 무거운 KURE-v1 초기화를 시작해 첫 화면의 체감 대기를 줄인다.
     retrieval_loader = load_retrieval_service_loader()
     with readiness_area:
-        render_retrieval_readiness(retrieval_loader)
+        render_retrieval_status(retrieval_loader)
 
     if st.session_state.get("active_upload_job_id"):
         with chat_area:
-            process_active_upload_job(retrieval_loader)
+            process_active_upload_job(retrieval_loader, active_attachment_slot)
         return
 
     if submission:

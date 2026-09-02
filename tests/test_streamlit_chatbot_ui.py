@@ -18,6 +18,13 @@ def test_streamlit_prepares_and_reuses_retrieval_service_in_background():
     assert "BackgroundServiceLoader(get_default_service).start()" in TEXT
     assert "retrieval_loader = load_retrieval_service_loader()" in TEXT
     assert '@st.fragment(run_every="1s")' in TEXT
+    assert "def render_retrieval_status(" in TEXT
+    readiness_body = TEXT[
+        TEXT.index("def render_retrieval_readiness("):
+        TEXT.index("def render_retrieval_status(")
+    ]
+    assert "st.rerun()" in readiness_body
+    assert "render_retrieval_status(retrieval_loader)" in TEXT
     assert "retrieval_loader.result()" in TEXT
     assert "service=retrieval_service" in TEXT
     assert "검색 모델 준비 완료" in TEXT
@@ -43,15 +50,16 @@ def test_upload_question_is_queued_before_ocr_and_tracks_each_file():
     assert '"needs_confirmation" if needs_confirmation else "failed"' in TEXT
     assert 'with st.status("첨부 문서 OCR 준비 중..."' in TEXT
     assert "def reconcile_upload_job_state()" in TEXT
-    assert "upload_in_progress = reconcile_upload_job_state()" in TEXT
-    assert "disabled=upload_in_progress" in TEXT
+    assert "reconcile_upload_job_state()" in TEXT
+    assert "disabled=upload_in_progress" not in TEXT
+    assert 'submit_mode="disable"' in TEXT
     assert "def _finish_upload_job(" in TEXT
     assert "finally:" in TEXT
 
     main_body = TEXT.split("def main() -> None:", 1)[1]
     queue_pos = main_body.index("_queue_upload_job(question, uploaded_files)")
     rerun_pos = main_body.index("st.rerun()", queue_pos)
-    process_pos = main_body.index("process_active_upload_job(retrieval_loader)")
+    process_pos = main_body.index("process_active_upload_job(")
     assert process_pos < queue_pos < rerun_pos
 
 
@@ -118,9 +126,12 @@ def test_welcome_message_uses_two_readable_paragraphs():
     assert '"확인 가능한 근거와 함께 안내해 드릴게요."' in TEXT
 
 
-def test_chat_area_is_bottom_aligned_above_input():
+def test_chat_area_uses_the_original_page_scroll_and_bottom_alignment():
     assert 'st.container(key="chat_area")' in TEXT
     assert ".st-key-chat_area" in TEXT
+    assert "overflow-y: auto" not in TEXT
+    assert "overscroll-behavior-y: contain" not in TEXT
+    assert "min-height: max(9rem" in TEXT
     assert "justify-content: flex-end" in TEXT
     assert "@media (max-width: 640px)" in TEXT
 
@@ -142,7 +153,7 @@ def test_processing_state_has_live_elapsed_timer_without_internal_exception_type
     assert "def render_live_elapsed_timer()" in TEXT
     assert 'id="jeonse-elapsed"' in TEXT
     assert "setInterval(updateElapsed, 100)" in TEXT
-    assert "timer_slot.empty()" in TEXT
+    assert "response_slot.empty()" in TEXT
     assert "오류 유형" not in TEXT
 
 
@@ -187,16 +198,19 @@ def test_answer_render_does_not_expose_raw_text_as_fallback():
     assert "검증 전 생성 원문일 수 있으므로" in TEXT
 
 
-def test_final_answer_is_rendered_only_from_canonical_history():
+def test_final_answer_replaces_timer_without_completion_rerun():
     answer_body = TEXT[TEXT.index("def _answer_visible_question("):TEXT.index("def process_question(")]
     process_body = TEXT[TEXT.index("def process_question("):TEXT.index("def process_active_upload_job(")]
-    notice_body = TEXT[TEXT.index("def _append_assistant_notice("):TEXT.index("def _answer_visible_question(")]
+    upload_body = TEXT[TEXT.index("def process_active_upload_job("):TEXT.index("def main() -> None:")]
 
     assert "render_assistant_meta(" not in answer_body
     assert "st.markdown(visible_answer_text(answer))" not in answer_body
-    assert 'st.chat_message("assistant"' not in notice_body
+    assert "response_slot = st.empty()" in answer_body
+    assert "response_slot.empty()" in answer_body
+    assert "render_assistant_content(assistant_message)" in answer_body
     assert "_answer_visible_question(" in process_body
-    assert "st.rerun()" in process_body
+    assert "st.rerun()" not in process_body
+    assert "st.rerun()" not in upload_body
 
 
 def test_answer_elapsed_time_is_shown_in_chat_meta():
@@ -217,5 +231,5 @@ def test_streamlit_logs_server_exception_without_showing_details():
 def test_live_timer_runs_during_blocking_answer_call():
     timer_pos = TEXT.index("render_live_elapsed_timer()")
     answer_pos = TEXT.index("answer = answer_question(")
-    clear_pos = TEXT.index("timer_slot.empty()")
+    clear_pos = TEXT.index("response_slot.empty()")
     assert timer_pos < answer_pos < clear_pos
